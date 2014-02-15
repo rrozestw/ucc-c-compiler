@@ -932,6 +932,7 @@ void out_memcpy(unsigned long bytes)
 {
 	type *tptr;
 	unsigned tptr_sz;
+	type *ty_ulong = type_nav_btype(cc1_type_nav, type_ulong);
 
 	if(bytes > 0){
 		out_comment("builtin-memcpy(%ld)", bytes);
@@ -940,23 +941,54 @@ void out_memcpy(unsigned long bytes)
 	}
 
 	/* currently ds (= dest,src) */
+
+	out_push_l(ty_ulong, 0); /* dsi */
+	out_pulltop(2); /* sid */
+	out_pulltop(2); /* ids */
+
 	while(bytes > 0){
+		char *lbl = out_label_code("builtin_memcpy");
+		unsigned long nloops = bytes / tptr_sz;
+
 		/* as many copies as we can */
 		out_change_type(tptr);
 		out_swap();
 		out_change_type(tptr);
 		out_swap();
 
-		while(bytes >= tptr_sz){
-			bytes -= tptr_sz;
-			out_memcpy_single();
-		}
+		out_label(lbl);
+
+		out_memcpy_single();
+
+		out_pulltop(2); /* dsi */
+		out_push_l(ty_ulong, 1);
+		out_op(op_plus); /* dsI */
+		out_dup(); /* dsII */
+
+		out_push_l(ty_ulong, nloops); /* dsIIN */
+		out_comment("comparing %d { %d } %d { %d }, nloops=%d",
+				vtop->type, (int)vtop->bits.val_i,
+				vtop[-1].type, (int)vtop[-1].bits.val_i,
+				(int)nloops);
+
+		out_op(op_lt); /* dsIB */
+		out_jtrue(lbl); /* dsI */
+
+		out_pulltop(2); /* sid */
+		out_pulltop(2); /* ids */
+
+		bytes %= tptr_sz;
 
 		if(bytes > 0){
 			tptr_sz /= 2;
 			tptr = type_ptr_to(type_nav_MAX_FOR(cc1_type_nav, tptr_sz));
 		}
+
+		free(lbl);
 	}
+	/* ids */
+	out_pulltop(2); /* dsi */
+	out_pop(); /* ds */
 }
 
 void out_normalise(void)
