@@ -932,17 +932,39 @@ void out_memcpy(unsigned long bytes)
 {
 	type *tptr;
 	unsigned tptr_sz;
-	type *ty_ulong = type_nav_btype(cc1_type_nav, type_ulong);
+	unsigned counter_off, counter_space;
+	type *ty_ulong;
 
-	if(bytes > 0){
-		out_comment("builtin-memcpy(%ld)", bytes);
-		tptr = type_ptr_to(type_nav_MAX_FOR(cc1_type_nav, bytes));
-		tptr_sz = type_size(tptr, NULL);
-	}
+	out_comment("builtin-memcpy(%ld)", bytes);
+
+	if(bytes == 0)
+		return;
+
+	tptr = type_ptr_to(type_nav_MAX_FOR(cc1_type_nav, bytes));
+	tptr_sz = type_size(tptr, NULL);
+
+	ty_ulong = type_nav_btype(cc1_type_nav, type_ulong);
 
 	/* currently ds (= dest,src) */
 
-	out_push_l(ty_ulong, 0); /* dsi */
+	/* save dest pointer */
+	out_swap(), /* sd */
+		out_dup(), /* sdd */
+		out_pulltop(2); /* implicit(d) ds */
+
+	counter_space = v_alloc_stack(
+			platform_word_size(),
+			"memcpy_counter");
+
+	counter_off = v_stack_sz();
+	vpush(type_ptr_to(ty_ulong));
+	v_set_stack(vtop, NULL, -(long)counter_off, /*lval:*/0);
+	out_dup(); /* sdii */
+
+	out_push_l(ty_ulong, 0); /* sdii0 */
+	out_store(); /* sdiI */
+	out_pop(); /* sdi */
+
 	out_pulltop(2); /* sid */
 	out_pulltop(2); /* ids */
 
@@ -961,21 +983,23 @@ void out_memcpy(unsigned long bytes)
 		out_memcpy_single();
 
 		out_pulltop(2); /* dsi */
-		out_push_l(ty_ulong, 1);
-		out_op(op_plus); /* dsI */
-		out_dup(); /* dsII */
+		out_dup(); /* dsii */
+		out_dup(); /* dsii */
+		out_deref(); /* dsiiI */
+		out_push_l(ty_ulong, 1); /* dsiiI1 */
+		out_op(op_plus); /* dsiiI */
+		out_store(); /* dsiI */
 
-		out_push_l(ty_ulong, nloops); /* dsIIN */
-		out_comment("comparing %d { %d } %d { %d }, nloops=%d",
-				vtop->type, (int)vtop->bits.val_i,
-				vtop[-1].type, (int)vtop[-1].bits.val_i,
-				(int)nloops);
+		out_push_l(ty_ulong, nloops); /* dsiIN */
+		out_comment("comparing with nloops=%d", (int)nloops);
 
-		out_op(op_lt); /* dsIB */
-		out_jtrue(lbl); /* dsI */
+		out_op(op_lt); /* dsiB */
+		out_jtrue(lbl); /* dsi */
 
 		out_pulltop(2); /* sid */
+		/* TODO: increment dest pointer */
 		out_pulltop(2); /* ids */
+		/* TODO: increment src pointer */
 
 		bytes %= tptr_sz;
 
@@ -989,6 +1013,12 @@ void out_memcpy(unsigned long bytes)
 	/* ids */
 	out_pulltop(2); /* dsi */
 	out_pop(); /* ds */
+
+	v_dealloc_stack(counter_space);
+
+	/* restore saved dest pointer */
+	out_swap(); /* sd */
+	out_pop(); /* s (implicit dest from before) */
 }
 
 void out_normalise(void)
