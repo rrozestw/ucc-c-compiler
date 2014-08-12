@@ -88,14 +88,19 @@ int expr_is_null_ptr(expr *e, enum null_strictness ty)
 	 */
 
 	int b = 0;
+	type *pointed_ty = type_is_ptr(e->tree_type);
 
 	/* void * always qualifies */
-	if(type_is_primitive(type_is_ptr(e->tree_type), type_void))
+	if(pointed_ty
+	&& type_qual(pointed_ty) == qual_none
+	&& type_is_primitive(pointed_ty, type_void))
+	{
 		b = 1;
-	else if(ty == NULL_STRICT_INT && type_is_integral(e->tree_type))
+	}else if(ty == NULL_STRICT_INT && type_is_integral(e->tree_type)){
 		b = 1;
-	else if(ty == NULL_STRICT_ANY_PTR && type_is_ptr(e->tree_type))
+	}else if(ty == NULL_STRICT_ANY_PTR && type_is_ptr(e->tree_type)){
 		b = 1;
+	}
 
 	return b && const_expr_and_zero(e);
 }
@@ -105,16 +110,17 @@ int expr_is_lval(expr *e)
 	if(!e->f_lea || e->lvalue_internal)
 		return 0;
 
-	/* special case:
-	 * (a = b) = c
-	 * ^~~~~~~ not an lvalue, but internally we handle it as one
-	 */
-	if(expr_kind(e, assign) && type_is_s_or_u(e->tree_type))
-		return 0;
+	return e->f_islval && e->f_islval(e);
+}
 
-	if(type_is_array(e->tree_type))
-		return 0;
+int expr_is_lval_unless_array(expr *e)
+{
+	return !type_is_array(e->tree_type);
+}
 
+int expr_is_lval_always(expr *e)
+{
+	(void)e;
 	return 1;
 }
 
