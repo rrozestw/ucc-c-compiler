@@ -327,7 +327,7 @@ static char *eval_macro_r(macro *m, char *start, char **pat)
 
 		change = *pat - start;
 		ret = word_replace(start, *pat, strlen(m->nam), val);
-		*pat = ret + change + strlen(val);
+		*pat = ret + change + strlen(val) - strlen(m->nam);
 
 		if(free_val)
 			free(val);
@@ -359,7 +359,7 @@ static char *eval_macro_r(macro *m, char *start, char **pat)
 
 			change = *pat - start;
 			start = str_replace(start, *pat, close_b + 1, eval_d);
-			*pat = start + change + strlen(eval_d);
+			*pat = start + change + strlen(eval_d) - strlen(m->nam);
 
 			free(eval_d);
 
