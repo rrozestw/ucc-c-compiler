@@ -36,13 +36,13 @@ static const out_val *out_memcpy_libc(
 	const out_val *fn = out_new_lbl(octx, fnty_ptr, mangled, 0);
 	const out_val *args[4] = { 0 };
 
-	args[0] = out_new_l(
+	args[0] = dest;
+	args[1] = src;
+
+	args[2] = out_new_l(
 			octx,
 			type_nav_btype(cc1_type_nav, type_intptr_t),
 			nbytes);
-
-	args[1] = dest;
-	args[2] = src;
 
 	return out_call(octx, fn, args, fnty_ptr);
 }
