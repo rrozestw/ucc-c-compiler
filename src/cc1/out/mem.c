@@ -94,3 +94,71 @@ const out_val *out_memcpy(
 		return out_memcpy_manual(octx, dest, src, nbytes);
 	}
 }
+
+
+ucc_wur const out_val *out_memset(
+		out_ctx *octx,
+		const out_val *dest,
+		unsigned byte,
+		unsigned long bytes)
+{
+	size_t n, rem;
+	unsigned i;
+	type *tzero = type_nav_MAX_FOR(cc1_type_nav, bytes);
+
+	type *textra, *textrap;
+	const out_val *v_ptr = dest;
+	const out_val *v_byte = out_new_l(octx,
+			type_nav_btype(cc1_type_nav, type_uchar),
+			byte);
+
+	if(!tzero)
+		tzero = type_nav_btype(cc1_type_nav, type_nchar);
+
+	n   = bytes / type_size(tzero, NULL);
+	rem = bytes % type_size(tzero, NULL);
+
+	if((textra = rem ? type_nav_MAX_FOR(cc1_type_nav, rem) : NULL))
+		textrap = type_ptr_to(textra);
+
+	v_ptr = out_change_type(octx, v_ptr, type_ptr_to(tzero));
+
+#ifdef MEMSET_VERBOSE
+	out_comment("memset(%s, %d, %lu), using ptr<%s>, %lu steps",
+			e->expr->f_str(),
+			e->bits.builtin_memset.ch,
+			e->bits.builtin_memset.len,
+			type_to_str(tzero), n);
+#endif
+
+	for(i = 0; i < n; i++){
+		const out_val *v_inc;
+
+		/* *p = 0 */
+		out_val_retain(octx, v_ptr);
+		out_store(octx, v_ptr, out_val_retain(octx, v_byte));
+
+		/* p++ (copied pointer) */
+		v_inc = out_new_l(octx, type_nav_btype(cc1_type_nav, type_intptr_t), 1);
+
+		v_ptr = out_op(octx, op_plus, v_ptr, v_inc);
+
+		if(rem){
+			/* need to zero a little more */
+			v_ptr = out_change_type(octx, v_ptr, textrap);
+
+			out_val_retain(octx, v_ptr);
+			out_store(octx, v_ptr, out_val_retain(octx, v_byte));
+		}
+	}
+
+	out_val_release(octx, v_byte);
+
+	return out_op(
+			octx, op_minus,
+			v_ptr,
+			out_new_l(
+				octx,
+				type_nav_btype(cc1_type_nav, type_intptr_t),
+				bytes));
+}
