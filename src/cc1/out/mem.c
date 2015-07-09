@@ -1,9 +1,12 @@
 #include <stddef.h>
 
 #include "../type_nav.h"
+#include "../funcargs.h"
 
 #include "out.h"
 #include "val.h" /* for .t */
+
+#define BUILTIN_USE_LIBC 1
 
 static void out_memcpy_single(
 		out_ctx *octx,
@@ -19,28 +22,36 @@ static void out_memcpy_single(
 	*src = out_op(octx, op_plus, *src, out_new_l(octx, t1, 1));
 }
 
-const out_val *out_memcpy(
+static const out_val *out_memcpy_libc(
 		out_ctx *octx,
 		const out_val *dest, const out_val *src,
 		unsigned long nbytes)
 {
-#ifdef BUILTIN_USE_LIBC
-	/* TODO - also with memset */
+	type *voidty = type_nav_btype(cc1_type_nav, type_void);
 	funcargs *fargs = funcargs_new();
+	type *fnty_noptr = type_func_of(voidty, fargs, NULL);
+	type *fnty_ptr = type_ptr_to(fnty_noptr);
+	char *mangled = "_memcpy"; // FIXME: func_mangle("memcpy", fnty_noptr);
 
-	dynarray_add(&fargs->arglist, decl_new_tref(NULL, type_cached_VOID_PTR()));
-	dynarray_add(&fargs->arglist, decl_new_tref(NULL, type_cached_VOID_PTR()));
-	dynarray_add(&fargs->arglist, decl_new_tref(NULL, type_cached_INTPTR_T()));
+	const out_val *fn = out_new_lbl(octx, fnty_ptr, mangled, 0);
+	const out_val *args[4] = { 0 };
 
-	type *ctype = type_new_func(
-			e->tree_type, fargs);
+	args[0] = out_new_l(
+			octx,
+			type_nav_btype(cc1_type_nav, type_intptr_t),
+			nbytes);
 
-	out_push_lbl("memcpy", 0);
-	out_push_l(type_cached_INTPTR_T(), e->bits.num.val);
-	lea_expr(e->rhs, stab);
-	lea_expr(e->lhs, stab);
-	out_call(3, e->tree_type, ctype);
-#else
+	args[1] = dest;
+	args[2] = src;
+
+	return out_call(octx, fn, args, fnty_ptr);
+}
+
+static const out_val *out_memcpy_manual(
+		out_ctx *octx,
+		const out_val *dest, const out_val *src,
+		unsigned long nbytes)
+{
 	size_t i = nbytes;
 	type *tptr;
 	unsigned tptr_sz;
@@ -70,5 +81,16 @@ const out_val *out_memcpy(
 	return out_op(
 			octx, op_minus,
 			dest, out_new_l(octx, dest->t, nbytes));
-#endif
+}
+
+const out_val *out_memcpy(
+		out_ctx *octx,
+		const out_val *dest, const out_val *src,
+		unsigned long nbytes)
+{
+	if(BUILTIN_USE_LIBC){
+		return out_memcpy_libc(octx, dest, src, nbytes);
+	}else{
+		return out_memcpy_manual(octx, dest, src, nbytes);
+	}
 }
