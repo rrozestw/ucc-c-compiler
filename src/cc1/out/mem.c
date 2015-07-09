@@ -7,6 +7,7 @@
 #include "val.h" /* for .t */
 
 #define BUILTIN_USE_LIBC 1
+#define LIBC_BYTE_LIMIT 16
 
 static void out_memcpy_single(
 		out_ctx *octx,
@@ -88,15 +89,42 @@ const out_val *out_memcpy(
 		const out_val *dest, const out_val *src,
 		unsigned long nbytes)
 {
-	if(BUILTIN_USE_LIBC){
+#warning TODO: merge this
+	if(BUILTIN_USE_LIBC && nbytes > LIBC_BYTE_LIMIT){
 		return out_memcpy_libc(octx, dest, src, nbytes);
 	}else{
 		return out_memcpy_manual(octx, dest, src, nbytes);
 	}
 }
 
+static const out_val *out_memset_libc(
+		out_ctx *octx,
+		const out_val *dest,
+		unsigned byte,
+		unsigned long nbytes)
+{
+#warning TODO: merge call int() funcs
+	type *voidty = type_nav_btype(cc1_type_nav, type_void);
+	funcargs *fargs = funcargs_new();
+	type *fnty_noptr = type_func_of(voidty, fargs, NULL);
+	type *fnty_ptr = type_ptr_to(fnty_noptr);
+	char *mangled = "_memset"; // FIXME: func_mangle("memset", fnty_noptr);
 
-ucc_wur const out_val *out_memset(
+	const out_val *fn = out_new_lbl(octx, fnty_ptr, mangled, 0);
+	const out_val *args[4] = { 0 };
+
+	args[0] = dest;
+	args[1] = out_new_l(octx,
+			type_nav_btype(cc1_type_nav, type_uchar),
+			byte);
+	args[2] = out_new_l(octx,
+			type_nav_btype(cc1_type_nav, type_intptr_t),
+			nbytes);
+
+	return out_call(octx, fn, args, fnty_ptr);
+}
+
+static const out_val *out_memset_manual(
 		out_ctx *octx,
 		const out_val *dest,
 		unsigned byte,
@@ -161,4 +189,17 @@ ucc_wur const out_val *out_memset(
 				octx,
 				type_nav_btype(cc1_type_nav, type_intptr_t),
 				bytes));
+}
+
+ucc_wur const out_val *out_memset(
+		out_ctx *octx,
+		const out_val *dest,
+		unsigned byte,
+		unsigned long nbytes)
+{
+	if(BUILTIN_USE_LIBC && nbytes > LIBC_BYTE_LIMIT){
+		return out_memset_libc(octx, dest, byte, nbytes);
+	}else{
+		return out_memset_manual(octx, dest, byte, nbytes);
+	}
 }
