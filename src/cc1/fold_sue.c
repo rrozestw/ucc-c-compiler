@@ -395,7 +395,12 @@ static void fold_sue_calc_substrut(
 	}
 
 	pack_state->sz = sue_size(sub_sue, &pack_state->d->where);
-	pack_state->align = sub_sue->align;
+	pack_state->align = sue_align(sub_sue, &pack_state->d->where);
+}
+
+static void check_sue_align_attr(struct_union_enum_st *sue, symtable *stab)
+{
+	sue->align = fold_resolve_align(sue->attr, stab, sue->align);
 }
 
 void fold_sue(struct_union_enum_st *const sue, symtable *stab)
@@ -515,6 +520,8 @@ warn:
 		sue->size = pack_to_align(
 				sue->primitive == type_struct ? offset : sz_max,
 				align_max);
+
+		check_sue_align_attr(sue, stab);
 
 		if(DUMP_RECORD_LAYOUT)
 			fprintf(stderr, "         | record size=%u align=%u\n", sue->size, sue->align);
