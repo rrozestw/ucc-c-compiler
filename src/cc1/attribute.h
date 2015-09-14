@@ -29,6 +29,8 @@ struct attribute
 		 */
 	} type;
 
+	int compiler_generated; /* e.g. nonnull moved from function to params */
+
 	union
 	{
 		struct
