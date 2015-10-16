@@ -44,16 +44,19 @@ static void blk_jmpnext(out_blk *to, struct flush_state *st)
 
 static void blk_jmpthread(struct flush_state *st)
 {
-	int lim = 0;
 	out_blk *to = st->jmpto;
 
-	while(!to->insns && to->type == BLK_NEXT_BLOCK && lim < JMP_THREAD_LIM){
+	if(fopt_mode & FOPT_THREAD_JUMPS){
+		int lim = 0;
+
+		while(!to->insns && to->type == BLK_NEXT_BLOCK && lim < JMP_THREAD_LIM){
 			to = to->bits.next;
 			lim++; /* prevent circulars */
-	}
+		}
 
-	if(lim && fopt_mode & FOPT_VERBOSE_ASM)
-		fprintf(st->f, "\t# jump threaded through %d blocks\n", lim);
+		if(lim && fopt_mode & FOPT_VERBOSE_ASM)
+			fprintf(st->f, "\t# jump threaded through %d blocks\n", lim);
+	}
 
 	impl_jmp(st->f, to->lbl);
 }

@@ -41,6 +41,7 @@ enum fopt
 	FOPT_DUMP_INIT             = 1 << 29,
 	FOPT_PRINT_AKA             = 1 << 30,
 	FOPT_SHORT_ENUMS           = 1 << 31,
+	FOPT_THREAD_JUMPS          = 1 << 31,
 };
 
 enum mopt
