@@ -36,6 +36,8 @@ FILE *funopen(void *cookie,
 FILE *fropen(void *cookie, __stdio_read  *);
 FILE *fwopen(void *cookie, __stdio_write *);
 
+FILE *fmemopen(void *buf, size_t size, const char *mode);
+
 /* seeking */
 #ifndef SEEK_SET
 # define SEEK_SET  0

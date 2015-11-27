@@ -1,0 +1,96 @@
+       The fmemopen() function opens a stream that permits the access
+       specified by mode.  The stream allows I/O to be performed on the
+       string or memory buffer pointed to by buf.  This buffer must be at
+       least size bytes long.
+
+       The argument mode is the same as for fopen(3).  If mode specifies an
+       append mode, then the initial file position is set to the location of
+       the first null byte ('\0') in the buffer; otherwise the initial file
+       position is set to the start of the buffer.  Since glibc 2.9, the
+       letter 'b' may be specified as the second character in mode.  This
+       provides "binary" mode: writes don't implicitly add a terminating
+       null byte, and fseek(3) SEEK_END is relative to the end of the buffer
+       (i.e., the value specified by the size argument), rather than the
+       current string length.
+
+       When a stream that has been opened for writing is flushed (fflush(3))
+       or closed (fclose(3)), a null byte is written at the end of the
+       buffer if there is space.  The caller should ensure that an extra
+       byte is available in the buffer (and that size counts that byte) to
+       allow for this.
+
+       Attempts to write more than size bytes to the buffer result in an
+       error.  (By default, such errors will be visible only when the stdio
+       buffer is flushed.  Disabling buffering with the following call may
+       be useful to detect errors at the time of an output operation:
+
+           setbuf(stdream, NULL);
+
+       Alternatively, the caller can explicitly set buf as the stdio stream
+       buffer, at the same time informing stdio of the buffer's size, using:
+
+           setbuffer(stream, buf, size);
+
+       In a stream opened for reading, null bytes ('\0') in the buffer do
+       not cause read operations to return an end-of-file indication.  A
+       read from the buffer will indicate end-of-file only when the file
+       pointer advances size bytes past the start of the buffer.
+
+       If buf is specified as NULL, then fmemopen() dynamically allocates a
+       buffer size bytes long.  This is useful for an application that wants
+       to write data to a temporary buffer and then read it back again.  The
+       buffer is automatically freed when the stream is closed.  Note that
+       the caller has no way to obtain a pointer to the temporary buffer
+       allocated by this call (but see open_memstream() below).
+
+       The open_memstream() function opens a stream for writing to a buffer.
+       The buffer is dynamically allocated (as with malloc(3)), and
+       automatically grows as required.  After closing the stream, the
+       caller should free(3) this buffer.
+
+       When the stream is closed (fclose(3)) or flushed (fflush(3)), the
+       locations pointed to by ptr and sizeloc are updated to contain,
+       respectively, a pointer to the buffer and the current size of the
+       buffer.  These values remain valid only as long as the caller
+       performs no further output on the stream.  If further output is
+       performed, then the stream must again be flushed before trying to
+       access these variables.
+
+       A null byte is maintained at the end of the buffer.  This byte is not
+       included in the size value stored at sizeloc.
+
+       The stream's file position can be changed with fseek(3) or fseeko(3).
+       Moving the file position past the end of the data already written
+       fills the intervening space with zeros.
+
+       The open_wmemstream() is similar to open_memstream(), but operates on
+       wide characters instead of bytes.
+
+   In glibc before version 2.7, seeking past the end of a stream created
+       by open_memstream() does not enlarge the buffer; instead the fseek(3)
+       call fails, returning -1.
+
+       If size is specified as zero, fmemopen() fails with the error EINVAL.
+       It would be more consistent if this case successfully created a
+       stream that then returned end of file on the first attempt at
+       reading.  Furthermore, POSIX.1-2008 does not specify a failure for
+       this case.
+
+       Specifying append mode ("a" or "a+") for fmemopen() sets the initial
+       file position to the first null byte, but (if the file offset is
+       reset to a location other than the end of the stream) does not force
+       subsequent writes to append at the end of the stream.
+
+       If the mode argument to fmemopen() specifies append ("a" or "a+"),
+       and the size argument does not cover a null byte in buf, then,
+       according to POSIX.1-2008, the initial file position should be set to
+       the next byte after the end of the buffer.  However, in this case the
+       glibc fmemopen() sets the file position to -1.
+
+       To specify binary mode for fmemopen() the 'b' must be the second
+       character in mode.  Thus, for example, "wb+" has the desired effect,
+       but "w+b" does not.  This is inconsistent with the treatment of mode
+       by fopen(3).
+
+       The glibc 2.9 addition of "binary" mode for fmemopen() silently
+       changed the ABI: previously, fmemopen() ignored 'b' in mode.

@@ -37,6 +37,15 @@ struct __FILE
 	char *buf_write_p, *buf_read_p;
 	*/
 };
+
+struct memopen_state
+{
+	void *buf;
+	size_t sz;
+	size_t off;
+	int is_binary;
+};
+
 #define FILE_INIT(_fd) { .status = file_status_fine, .fd = _fd }
 
 static FILE _stdin  = FILE_INIT(0);
@@ -218,6 +227,78 @@ FILE *fropen(void *cookie, __stdio_read *rfn)
 FILE *fwopen(void *cookie, __stdio_write *wfn)
 {
 	return funopen(cookie, NULL, wfn, NULL, NULL);
+}
+
+static size_t memopen_read(void *v, char *buf, int n)
+{
+	struct memopen_state *s = v;
+}
+
+static size_t memopen_write(void *v, const char *buf, int n)
+{
+	struct memopen_state *s = v;
+	/* if n > sz, -ENOSPC? */
+}
+
+static int memopen_seek(void *v, fpos_t pos, int whence)
+{
+	struct memopen_state *s = v;
+}
+
+static int memopen_close(void *v)
+{
+	struct memopen_state *s = v;
+	/* TODO: nul byte at the end */
+	free(s);
+	return 0;
+}
+
+FILE *fmemopen(void *buf, size_t size, const char *mode)
+{
+	if(size == 0){
+		errno = EINVAL;
+		return NULL;
+	}
+
+	struct memopen_state *state = malloc(sizeof *state);
+	if(!state)
+		return NULL;
+
+	if(!buf){
+		buf = malloc(size);
+		if(!buf)
+			goto out;
+	}
+
+	state->buf = buf;
+	state->sz = size;
+	state->off = 0;
+	state->is_binary = 0;
+
+	__stdio_read *read = memopen_read;
+	__stdio_write *write = memopen_write;
+	switch(*mode){
+		case 'r': write = NULL; break;
+		case 'w': read = NULL; break;
+		default:
+			/* TODO: append mode means first nul byte of buf */
+			errno = EINVAL;
+			goto out;
+	}
+	switch(mode[1]){
+		default:
+			errno = EINVAL;
+			goto out;
+		case 'b':
+			state->is_binary = 1;
+			break;
+	}
+
+	FILE *f = funopen(state, read, write, memopen_seek, memopen_close);
+	return f;
+out:
+	free(state);
+	return NULL;
 }
 
 FILE *fopen(const char *path, const char *mode)
