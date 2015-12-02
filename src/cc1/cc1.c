@@ -607,7 +607,10 @@ int main(int argc, char **argv)
 					ucc_unreach(1);
 
 				case 'W':
-					warning_on(arg, rev ? W_OFF : W_WARN, &werror, unknown_warnings);
+					if(!strcmp(arg, "system-headers"))
+						cc1_warning_sysheaders = !rev;
+					else
+						warning_on(arg, rev ? W_OFF : W_WARN, &werror, unknown_warnings);
 					continue;
 			}
 

@@ -19,6 +19,7 @@
 
 
 struct cc1_warning cc1_warning;
+int cc1_warning_sysheaders;
 
 enum warning_special
 {

@@ -30,6 +30,7 @@ struct cc1_warning
 };
 
 extern struct cc1_warning cc1_warning;
+extern int cc1_warning_sysheaders;
 
 /* returns 1 if a warning was emitted */
 int cc1_warn_at_w(
