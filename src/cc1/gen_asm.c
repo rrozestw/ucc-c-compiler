@@ -32,6 +32,8 @@
 #include "type_nav.h"
 #include "label.h"
 
+#include "ops/expr_funcall.h"
+
 int gen_had_error;
 
 void IGNORE_PRINTGEN(const out_val *v)

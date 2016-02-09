@@ -12,6 +12,8 @@
 #include "../type_nav.h"
 #include "../out/dbg.h"
 
+#include "expr_val.h"
+
 #define IMPLICIT_STR(e) (expr_cast_is_implicit(e) ? "implicit " : "")
 
 static integral_t convert_integral_to_integral_warn(

@@ -16,6 +16,10 @@
 #include "../type_nav.h"
 #include "../c_funcs.h"
 
+#include "expr_identifier.h"
+#include "expr_op.h"
+#include "expr_cast.h"
+
 #define ARG_BUF(buf, i, sp)       \
 	snprintf(buf, sizeof buf,       \
 			"argument %d to %s",        \
