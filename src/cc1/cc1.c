@@ -361,11 +361,11 @@ static void gen_backend(symtable_global *globs, const char *fname)
 
 			if(compdir != buf)
 				free(compdir);
+
+			io_fin(gf == NULL, fname);
 			break;
 		}
 	}
-
-	io_fin(gf == NULL, fname);
 }
 
 static int optimise(const char *argv0, const char *arg)
