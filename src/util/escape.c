@@ -134,7 +134,7 @@ unsigned long long char_seq_to_ullong(
 			limit ? bases[mode].max : 0);
 }
 
-char escape_char_1(char *start, char **const end, int *const warn, int one_byte_limit)
+int escape_char_1(char *start, char **const end, int *const warn, int one_byte_limit)
 {
 	/* no binary here - only in numeric constants */
 	char esc = *start;
