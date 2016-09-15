@@ -111,7 +111,7 @@ static int isodigit(int c)
 }
 
 unsigned long long char_seq_to_ullong(
-		char *s, char **const eptr, enum base mode, int *const of, int limit)
+		char *s, char **const eptr, enum base mode, int *const of)
 {
 	static const struct
 	{
@@ -122,7 +122,7 @@ unsigned long long char_seq_to_ullong(
 		{    2, 0, isbdigit },
 		{  010, 3, isodigit },
 		{   10, 0, isdigit  },
-		{ 0x10, 2, isxdigit },
+		{ 0x10, 0, isxdigit },
 	};
 
 	return read_ap_num(
@@ -131,10 +131,10 @@ unsigned long long char_seq_to_ullong(
 			bases[mode].base,
 			eptr,
 			of,
-			limit ? bases[mode].max : 0);
+			bases[mode].max);
 }
 
-int escape_char_1(char *start, char **const end, int *const warn, int one_byte_limit)
+int escape_char_1(char *start, char **const end, int *const warn)
 {
 	/* no binary here - only in numeric constants */
 	char esc = *start;
@@ -150,14 +150,9 @@ int escape_char_1(char *start, char **const end, int *const warn, int one_byte_l
 				start,
 				end,
 				esc == 'x' ? HEX : OCT,
-				&overflow,
-				one_byte_limit);
+				&overflow);
 
 		if(overflow)
-			*warn = ERANGE;
-		else if(one_byte_limit && parsed > 0xffU)
-			*warn = ERANGE;
-		else if(!one_byte_limit && parsed > 0xffffffffU)
 			*warn = ERANGE;
 
 		return parsed;
@@ -203,7 +198,7 @@ int escape_char(
 				break;
 			}
 
-			this = escape_char_1(i, &escfin, warn, /*limit-to-1-byte*/!is_wide);
+			this = escape_char_1(i, &escfin, warn);
 
 			i = escfin /*for inc:*/- 1;
 		}else{

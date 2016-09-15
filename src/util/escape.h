@@ -35,7 +35,7 @@ int escape_char(
  */
 int escape_char_1(
 		char *start, char **const end,
-		int *const warn, int one_byte_limit)
+		int *const warn)
 	ucc_nonnull();
 
 /*
@@ -52,8 +52,7 @@ unsigned long long char_seq_to_ullong(
 		char *s,
 		char **eptr,
 		enum base mode,
-		int *const overflow,
-		int applylimit)
+		int *const overflow)
 	ucc_nonnull();
 
 #define isoct(x) ('0' <= (x) && (x) < '8')
