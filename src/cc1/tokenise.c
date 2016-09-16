@@ -803,7 +803,11 @@ out:
 	if(end)
 		update_bufferpos(end + 1);
 
-	currentval.val.i = ch;
+	if(is_wide)
+		currentval.val.i = (int)ch;
+	else
+		currentval.val.i = (char)ch; /* ensure we sign extend from char */
+
 	currentval.suffix = 0;
 	curtok = is_wide ? token_integer : token_character;
 }
