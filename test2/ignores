@@ -29,3 +29,6 @@ sanitize/shift.c
 
 # waiting for fixed stret
 structs/function_passing/nested_ret.c
+
+# waiting for unicode literal support
+literals/unicode.c
