@@ -71,22 +71,32 @@ void cstring_escape(struct cstring *cstr, int is_wide)
 		unsigned add;
 
 		if(cstr->bits.ascii[i] == '\\'){
+			extern int parse_had_error;
 			where loc;
 			char *end;
-			int warn;
+			int warn, err;
 
 			/* assumes we're called immediately after tokenisation of string */
 			where_cc1_current(&loc);
 			loc.chr += i + 1;
 
-			add = escape_char_1(&cstr->bits.ascii[i + 1], &end, &warn);
+			add = escape_char_1(&cstr->bits.ascii[i + 1], &end, &warn, &err);
 
 			UCC_ASSERT(end, "bad parse?");
 
 			i = (end - cstr->bits.ascii) /*for the loop inc:*/- 1;
 
+			switch(err){
+				case 0:
+					break;
+				case EILSEQ:
+					warn_at_print_error(&loc, "empty escape sequence");
+					parse_had_error = 1;
+					break;
+				default:
+					assert(0 && "unhandled escape error");
+			}
 			switch(warn){
-					extern int parse_had_error;
 				case 0:
 					break;
 				case ERANGE:
@@ -96,6 +106,8 @@ void cstring_escape(struct cstring *cstr, int is_wide)
 				case EINVAL:
 					cc1_warn_at(&loc, escape_char, "invalid escape character");
 					break;
+				default:
+					assert(0 && "unhandled escape warning");
 			}
 
 		}else{
