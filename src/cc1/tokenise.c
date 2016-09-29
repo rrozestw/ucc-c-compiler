@@ -505,7 +505,7 @@ static void read_integer(const enum base mode)
 		case DEC: currentval.suffix = 0; break;
 	}
 
-	currentval.val.i = char_seq_to_ullong(bufferpos, &end, mode, &of);
+	currentval.val.i = char_seq_to_ullong(bufferpos, &end, mode, &of, /*apply limit*/0);
 
 	if(of){
 		/* force unsigned long long ULLONG_MAX */

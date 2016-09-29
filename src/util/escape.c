@@ -112,7 +112,7 @@ static int isodigit(int c)
 }
 
 unsigned long long char_seq_to_ullong(
-		char *s, char **const eptr, enum base mode, int *const of)
+		char *s, char **const eptr, enum base mode, int *const of, int limit)
 {
 	static const struct
 	{
@@ -132,7 +132,7 @@ unsigned long long char_seq_to_ullong(
 			bases[mode].base,
 			eptr,
 			of,
-			bases[mode].max);
+			limit ? bases[mode].max : 0);
 }
 
 int escape_char_1(
@@ -154,7 +154,8 @@ int escape_char_1(
 				start,
 				end,
 				esc == 'x' ? HEX : OCT,
-				&overflow);
+				&overflow,
+				1);
 
 		if(overflow)
 			*err = ERANGE;

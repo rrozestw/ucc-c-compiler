@@ -56,12 +56,17 @@ int escape_char_1(
  * "\1234" <-- applylimit prevents over-reading
  * '\1234' <-- !applylimit => error/overflow
  *
- * *eptr = NULL, on error */
+ * *eptr = NULL, on error
+ *
+ * limit applies for parsing raw octal literals,
+ * as opposed to esc-seq
+ */
 unsigned long long char_seq_to_ullong(
 		char *s,
 		char **eptr,
 		enum base mode,
-		int *const overflow)
+		int *const overflow,
+		int limit)
 	ucc_nonnull();
 
 #define isoct(x) ('0' <= (x) && (x) < '8')
