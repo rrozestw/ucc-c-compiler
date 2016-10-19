@@ -1034,6 +1034,30 @@ static int array_subscript_tycheck(expr *e)
 			"array subscript is of type 'char'");
 }
 
+static int op_int_promotion_check(expr *e)
+{
+	type *tlhs, *trhs;
+
+	if(!expr_kind(e->lhs, cast) || !expr_cast_is_lval2rval(expr_cast_child(e->lhs)))
+		return 0;
+	if(!expr_kind(e->rhs, cast) || !expr_cast_is_lval2rval(expr_cast_child(e->rhs)))
+		return 0;
+
+	tlhs = expr_cast_child(e->lhs)->tree_type;
+	trhs = expr_cast_child(e->rhs)->tree_type;
+
+	if(type_size(tlhs, NULL) < type_primitive_size(type_int)
+	&& type_size(trhs, NULL) < type_primitive_size(type_int))
+	{
+		return cc1_warn_at(&e->where,
+				int_op_promotion,
+				"operands promoted to int for '%s'",
+				op_to_str(e->bits.op.op));
+	}
+
+	return 0;
+}
+
 void fold_expr_op(expr *e, symtable *stab)
 {
 	const char *op_desc = e->bits.op.array_notation
@@ -1079,7 +1103,8 @@ void fold_expr_op(expr *e, symtable *stab)
 				op_shift_check(e) ||
 				str_cmp_check(e) ||
 				op_sizeof_div_check(e) ||
-				array_subscript_tycheck(e));
+				array_subscript_tycheck(e) ||
+				op_int_promotion_check(e));
 
 	}else{
 		/* (except unary-not) can only have operations on integers,
