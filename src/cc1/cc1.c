@@ -181,16 +181,7 @@ static void ccdie(int verbose, const char *fmt, ...)
 
 int where_in_sysheader(const where *w)
 {
-	const char **i;
-
-	if(!w->fname)
-		return 0;
-
-	for(i = system_includes; i && *i; i++)
-		if(!strncmp(w->fname, *i, strlen(*i)))
-			return 1;
-
-	return 0;
+	return w->is_sysh;
 }
 
 static void io_cleanup(void)
@@ -641,10 +632,6 @@ unrecognised:
 				fprintf(stderr, "\"%s\" unrecognised\n", argv[i]);
 				goto usage;
 			}
-
-		}else if(!strncmp(argv[i], "-I", 2)){
-			/* these are system headers only - we don't get the full set */
-			dynarray_add(&system_includes, (const char *)argv[i] + 2);
 
 		}else if(!strncmp(argv[i], "-O", 2)){
 			if(optimise(*argv, argv[i] + 2))
