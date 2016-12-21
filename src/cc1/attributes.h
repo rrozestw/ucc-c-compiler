@@ -22,7 +22,7 @@
 		NAME(always_inline, 0)  \
 		NAME(noinline, 0)       \
 		ALIAS("designated_init", desig_init, 0)     \
-		ALIAS("__ucc_debug", ucc_debug, 1) /* logs out a message when handled */ \
+		ALIAS("__ucc_debug", ucc_debug, 0) /* logs out a message when handled */ \
 		ALIAS("__cdecl", call_conv, 0)        \
 		EXTRA_ALIAS("cdecl", call_conv)    \
 		EXTRA_ALIAS("stdcall", call_conv)  \
