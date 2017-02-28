@@ -52,6 +52,15 @@ static struct
 	{ 'f',  "show-line",     FOPT_SHOW_LINE       },
 	{ 'f',  "pic",           FOPT_PIC             },
 	{ 'f',  "PIC",           FOPT_PIC             },
+
+	{ 'f',  "pie",           FOPT_PIE             },
+	{ 'f',  "PIE",           FOPT_PIE             },
+	/* TODO implies -fpic/PIC and __attribute__((visibility("protected"))) for all symbols.
+	 * "default": the (non-static) symbol may be interposed (so must be loaded via GOT/PLT-call).
+	 * "hidden": the (non-static) symbol is private to this module and won't be interposed (so may be called/loaded directly / via f@(%rip)). Said symbol won't be exposed to other modules.
+	 * "protected": same as hidden, except the symbol will be exposed to other modules (same as -Bsymbolic{,-functions}). Must take care to ensure it is never interposed.
+	 */
+
 	{ 'f',  "builtin",       FOPT_BUILTIN         },
 	{ 'f',  "ms-extensions",    FOPT_MS_EXTENSIONS    },
 	{ 'f',  "plan9-extensions", FOPT_PLAN9_EXTENSIONS },
