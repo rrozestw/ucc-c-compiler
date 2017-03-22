@@ -153,7 +153,7 @@ struct unused_ ## pre { char check[test ? -1 : 1]; }
 COMP_CHECK(b, sizeof fopt_mode != sizeof(int));
 
 
-static void ccdie(int verbose, const char *fmt, ...)
+static void ccdie(const char *fmt, ...)
 {
 	int i = strlen(fmt);
 	va_list l;
@@ -169,15 +169,17 @@ static void ccdie(int verbose, const char *fmt, ...)
 		fputc('\n', stderr);
 	}
 
-	if(verbose){
-		fputs("warnings + options:\n", stderr);
-		for(i = 0; fopts[i].arg; i++)
-			fprintf(stderr, "  -%c%s\n", fopts[i].type, fopts[i].arg);
-		for(i = 0; val_args[i].arg; i++)
-			fprintf(stderr, "  -%c%s=value\n", val_args[i].pref, val_args[i].arg);
-	}
-
 	exit(1);
+}
+
+static void dump_options(void)
+{
+	int i;
+	fputs("warnings + options:\n", stderr);
+	for(i = 0; fopts[i].arg; i++)
+		fprintf(stderr, "  -%c%s\n", fopts[i].type, fopts[i].arg);
+	for(i = 0; val_args[i].arg; i++)
+		fprintf(stderr, "  -%c%s=value\n", val_args[i].pref, val_args[i].arg);
 }
 
 int where_in_sysheader(const where *w)
@@ -213,7 +215,7 @@ static void io_setup(void)
 		int fd = tmpfile_prefix_out("cc1_", &fname);
 
 		if(fd < 0)
-			ccdie(0, "tmpfile(%s):", fname);
+			ccdie("tmpfile(%s):", fname);
 
 		if(remove(fname) != 0)
 			fprintf(stderr, "remove %s: %s\n", fname, strerror(errno));
@@ -254,23 +256,23 @@ static void io_fin(int do_sections, const char *fname)
 			long last = ftell(cc_out[i]);
 
 			if(last == -1 || fseek(cc_out[i], 0, SEEK_SET) == -1)
-				ccdie(0, "seeking on section file %d:", i);
+				ccdie("seeking on section file %d:", i);
 
 			if(fprintf(cc1_out, ".section %s\n", sections[i].name) < 0
 			|| fprintf(cc1_out, "%s%s:\n", SECTION_BEGIN, sections[i].desc) < 0)
 			{
-				ccdie(0, "write to cc1 output:");
+				ccdie("write to cc1 output:");
 			}
 
 			while(fgets(buf, sizeof buf, cc_out[i]))
 				if(fputs(buf, cc1_out) == EOF)
-					ccdie(0, "write to cc1 output:");
+					ccdie("write to cc1 output:");
 
 			if(ferror(cc_out[i]))
-				ccdie(0, "read from section file %d:", i);
+				ccdie("read from section file %d:", i);
 
 			if(fprintf(cc1_out, "%s%s:\n", SECTION_END, sections[i].desc) < 0)
-				ccdie(0, "terminating section %d:", i);
+				ccdie("terminating section %d:", i);
 		}
 	}
 
@@ -283,7 +285,7 @@ static void io_fin(int do_sections, const char *fname)
 	}
 
 	if(fclose(cc1_out))
-		ccdie(0, "close cc1 output");
+		ccdie("close cc1 output");
 }
 
 static void sigh(int sig)
@@ -521,7 +523,7 @@ int main(int argc, char **argv)
 			if(strcmp(argv[i], "-")){
 				cc1_out = fopen(argv[i], "w");
 				if(!cc1_out){
-					ccdie(0, "open %s:", argv[i]);
+					ccdie("open %s:", argv[i]);
 					goto out;
 				}
 			}
@@ -530,7 +532,7 @@ int main(int argc, char **argv)
 			int gnu;
 
 			if(std_from_str(argv[i], &cc1_std, &gnu))
-				ccdie(0, "-std argument \"%s\" not recognised", argv[i]);
+				ccdie("-std argument \"%s\" not recognised", argv[i]);
 
 			if(gnu)
 				fopt_mode |= FOPT_EXT_KEYWORDS;
@@ -650,11 +652,15 @@ unrecognised:
 			if(optimise(*argv, argv[i] + 2))
 				exit(1);
 
+		}else if(!strcmp(argv[i], "--help")){
+			dump_options();
+			ccdie("Usage: %s [-W[no-]warning] [-f[no-]option] [-o output] [...] file", *argv);
+
 		}else if(!fname){
 			fname = argv[i];
 		}else{
 usage:
-			ccdie(1, "Usage: %s [-W[no-]warning] [-f[no-]option] [-X backend] [-m[32|64]] [-o output] file", *argv);
+			ccdie("%s: unknown argument: '%s'", argv[0], argv[i]);
 		}
 	}
 
@@ -662,7 +668,7 @@ usage:
 	{
 		const unsigned new = powf(2, cc1_mstack_align);
 		if(new < platform_word_size())
-			ccdie(0, "stack alignment must be >= platform word size (2^%d)",
+			ccdie("stack alignment must be >= platform word size (2^%d)",
 					log2i(platform_word_size()));
 
 		cc1_mstack_align = new;
@@ -679,7 +685,7 @@ usage:
 	if(fname && strcmp(fname, "-")){
 		infile = fopen(fname, "r");
 		if(!infile)
-			ccdie(0, "open %s:", fname);
+			ccdie("open %s:", fname);
 	}else{
 		infile = stdin;
 		fname = "-";
