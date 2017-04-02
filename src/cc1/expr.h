@@ -12,14 +12,23 @@
 #include "out/out.h"
 #include "../util/compiler.h"
 
+enum lvalue_kind
+{
+	LVALUE_NO,
+	LVALUE_USER_ASSIGNABLE,
+	LVALUE_STRUCT /* e.g. struct A f(); f() - is an lvalue internally */
+};
+
 typedef void func_fold(struct expr *, struct symtable *);
 typedef void func_const(struct expr *, consty *);
 typedef const char *func_str(void);
 typedef void func_mutate_expr(struct expr *);
-typedef int func_is_lval(struct expr *);
+typedef enum lvalue_kind func_is_lval(struct expr *);
 
-typedef ucc_wur const out_val *func_gen(struct expr *, out_ctx *);
-typedef ucc_wur const out_val *func_gen_lea(struct expr *, out_ctx *);
+typedef ucc_wur const out_val *func_gen(const struct expr *, out_ctx *);
+
+struct dump;
+typedef void func_dump(const struct expr *, struct dump *);
 
 #define UNUSED_OCTX() (void)octx; return NULL
 
@@ -30,14 +39,12 @@ struct expr
 
 	func_fold *f_fold;
 	func_gen *f_gen;
+	func_dump *f_dump;
 	func_str *f_str;
 
 	func_const *f_const_fold; /* optional, used in static/global init */
-	func_gen_lea *f_lea; /* optional */
-	func_is_lval *f_islval; /* optional */
 
-	/* not a user lvalue, e.g. a?b:c, where the operands are structs */
-	int lvalue_internal;
+	func_is_lval *f_islval; /* optional */
 
 	int freestanding; /* e.g. 1; needs use, whereas x(); doesn't - freestanding */
 	struct
@@ -54,6 +61,7 @@ struct expr
 #define expr_is_st_dot     assign_is_post
 #define expr_addr_implicit assign_is_post
 #define expr_comp_lit_cgen assign_is_post
+#define expr_comma_synthesized assign_is_post
 	enum what_of
 	{
 		what_sizeof,
@@ -76,8 +84,8 @@ struct expr
 
 		struct
 		{
+			type *upcast_ty;
 			enum op_type op;
-			int upcast;
 		} compoundop;
 
 		/* __builtin_va_start */
@@ -86,19 +94,32 @@ struct expr
 		struct
 		{
 			stringlit_at lit_at; /* for strings */
-			int is_func; /* __func__ ? */
+			int is_func; /* __func__ (1) / __FUNCTION__ (2) */
 		} strlit;
 
 		struct
 		{
-			sym *sym;
-			char *spel;
+			enum
+			{
+				IDENT_NORM,
+				IDENT_ENUM
+			} type;
+			union
+			{
+				struct
+				{
+					sym *sym;
+					char *spel;
+				} ident;
+				struct enum_member *enum_mem;
+			} bits;
 		} ident;
 
 		struct
 		{
 			char *spel;
 			struct label *label;
+			int static_ctx;
 		} lbl;
 
 		struct /* used in compound literal */
@@ -131,6 +152,7 @@ struct expr
 		{
 			unsigned sz;
 			type *of_type;
+			decl *vm;
 		} size_of;
 
 		struct
@@ -166,8 +188,14 @@ struct expr
 };
 
 
-expr *expr_new(          func_mutate_expr *, func_fold *, func_str *, func_gen *, func_gen *, func_gen *);
-void expr_mutate(expr *, func_mutate_expr *, func_fold *, func_str *, func_gen *, func_gen *, func_gen *);
+expr *expr_new(
+		func_mutate_expr *, func_fold *, func_str *,
+		func_gen *, func_dump *, func_gen *);
+
+void expr_mutate(
+		expr *,
+		func_mutate_expr *, func_fold *, func_str *,
+		func_gen *, func_dump *, func_gen *);
 
 /* sets e->where */
 expr *expr_set_where(expr *, where const *);
@@ -175,20 +203,30 @@ expr *expr_set_where(expr *, where const *);
 /* sets e->where and e->where.len based on the change */
 expr *expr_set_where_len(expr *, where *);
 
-#define expr_mutate_wrapper(e, type) expr_mutate(e,               \
-                                        mutate_expr_     ## type, \
-                                        fold_expr_       ## type, \
-                                        str_expr_        ## type, \
-                                        gen_expr_        ## type, \
-                                        gen_expr_str_    ## type, \
-                                        gen_expr_style_  ## type)
+#define expr_mutate_wrapper(e, type) \
+	expr_mutate(e,                \
+			mutate_expr_     ## type, \
+			fold_expr_       ## type, \
+			str_expr_        ## type, \
+			gen_expr_        ## type, \
+			dump_expr_       ## type, \
+			gen_expr_style_  ## type)
 
-#define expr_new_wrapper(type) expr_new(mutate_expr_     ## type, \
-                                        fold_expr_       ## type, \
-                                        str_expr_        ## type, \
-                                        gen_expr_        ## type, \
-                                        gen_expr_str_    ## type, \
-                                        gen_expr_style_  ## type)
+#define expr_new_wrapper(type)   \
+	expr_new(mutate_expr_ ## type, \
+			fold_expr_       ## type,  \
+			str_expr_        ## type,  \
+			gen_expr_        ## type,  \
+			dump_expr_       ## type,  \
+			gen_expr_style_  ## type)
+
+#define EXPR_DEFS(type)                  \
+	func_fold fold_expr_ ## type;          \
+	func_gen gen_expr_ ## type;            \
+	func_str str_expr_ ## type;            \
+	func_dump dump_expr_ ## type;          \
+	func_mutate_expr mutate_expr_ ## type; \
+	func_gen gen_expr_style_ ## type
 
 expr *expr_new_numeric(numeric *);
 
@@ -212,6 +250,7 @@ expr *expr_new_decl_init(decl *d, struct decl_init *di);
 #include "ops/expr_struct.h"
 #include "ops/expr_compound_lit.h"
 #include "ops/expr_string.h"
+#include "ops/expr_block.h"
 
 /* XXX: memleak */
 #define expr_free(x) do{                 \
@@ -228,7 +267,6 @@ expr *expr_new_identifier(char *sp);
 expr *expr_new_cast(expr *, type *cast_to, int implicit);
 expr *expr_new_cast_lval_decay(expr *);
 
-expr *expr_new_identifier(char *sp);
 expr *expr_new_val(int val);
 expr *expr_new_op(enum op_type o);
 expr *expr_new_op2(enum op_type o, expr *l, expr *r);
@@ -246,11 +284,13 @@ expr *expr_new_deref(expr *);
 expr *expr_new_struct(expr *sub, int dot, expr *ident);
 expr *expr_new_struct_mem(expr *sub, int dot, decl *);
 expr *expr_new_str(char *, size_t, int wide, where *, symtable *stab);
-expr *expr_new_addr_lbl(char *);
+expr *expr_new_addr_lbl(char *lbl, int static_ctx);
 expr *expr_new_addr(expr *);
 
-expr *expr_new_comma2(expr *lhs, expr *rhs);
+expr *expr_new_comma2(expr *lhs, expr *rhs, int compiler_gen);
 #define expr_new_comma() expr_new_wrapper(comma)
+
+expr *expr_compiler_generated(expr *);
 
 enum null_strictness
 {
@@ -261,10 +301,10 @@ enum null_strictness
 
 int expr_is_null_ptr(expr *, enum null_strictness);
 
-int expr_is_lval(expr *);
+enum lvalue_kind expr_is_lval(expr *e);
 
-int expr_is_lval_unless_array(expr *);
-int expr_is_lval_always(expr *);
+enum lvalue_kind expr_is_lval_always(expr *);
+enum lvalue_kind expr_is_lval_struct(expr *);
 
 void expr_set_const(expr *, consty *);
 
@@ -272,6 +312,9 @@ void expr_set_const(expr *, consty *);
 expr *expr_new_array_idx_e(expr *base, expr *idx);
 expr *expr_new_array_idx(expr *base, int i);
 
-expr *expr_skip_casts(expr *);
+expr *expr_skip_all_casts(expr *);
+expr *expr_skip_lval2rval(expr *);
+
+decl *expr_to_declref(expr *e, const char **whynot);
 
 #endif

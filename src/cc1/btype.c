@@ -73,7 +73,7 @@ enum type_cmp btype_cmp(const btype *a, const btype *b)
 	return TYPE_NOT_EQUAL;
 }
 
-int type_primitive_is_signed(enum type_primitive p)
+int type_primitive_is_signed(enum type_primitive p, int hard_err_on_su)
 {
 	switch(p){
 		case type_nchar:
@@ -93,9 +93,12 @@ int type_primitive_is_signed(enum type_primitive p)
 
 		case type_struct:
 		case type_union:
-			ICE("%s(%s)",
-					__func__,
-					type_primitive_to_str(p));
+			if(hard_err_on_su){
+				ICE("%s(%s)",
+						__func__,
+						type_primitive_to_str(p));
+			}
+			return 0;
 
 		case type_enum:
 			return 0; /* for now - enum types coming later */
@@ -118,18 +121,48 @@ int type_primitive_is_signed(enum type_primitive p)
 
 int btype_is_signed(const btype *t)
 {
-	return type_primitive_is_signed(t->primitive);
+	return type_primitive_is_signed(t->primitive, 1);
 }
 
-unsigned btype_size(const btype *t, where *from)
+int type_intrank(enum type_primitive p)
 {
-	if(t->sue)
+	switch(p){
+		default:
+			return -1;
+
+		case type_nchar:
+		case type_schar:
+		case type_uchar:
+		case type_int:
+		case type_uint:
+		case type_short:
+		case type_ushort:
+		case type_long:
+		case type_ulong:
+		case type_llong:
+		case type_ullong:
+			return p;
+	}
+
+#define static_assert(tag, exp) ((void)sizeof(char[(exp) ? 1 : -1]))
+	/* check special case: char */
+	static_assert(a, type_nchar < type_schar);
+	static_assert(b, type_schar < type_uchar);
+
+	/* rest follow on from type_int */
+	static_assert(c, type_int < type_uint);
+#undef static_assert
+}
+
+unsigned btype_size(const btype *t, const where *from)
+{
+	if(t->sue && t->primitive != type_int)
 		return sue_size(t->sue, from);
 
 	return type_primitive_size(t->primitive);
 }
 
-unsigned btype_align(const btype *t, where *from)
+unsigned btype_align(const btype *t, const where *from)
 {
 	if(t->sue)
 		return sue_align(t->sue, from);
@@ -162,34 +195,30 @@ const char *btype_to_str(const btype *t)
 	static char buf[BTYPE_STATIC_BUFSIZ];
 	char *bufp = buf;
 
-	if(t->sue){
-		snprintf(bufp, BUF_SIZE, "%s %s",
-				sue_str(t->sue),
-				t->sue->spel);
+	switch(t->primitive){
+		case type_void:
+		case type__Bool:
+		case type_nchar: case type_schar: case type_uchar:
+		case type_short: case type_ushort:
+		case type_int:   case type_uint:
+		case type_long:  case type_ulong:
+		case type_float:
+		case type_double:
+		case type_llong: case type_ullong:
+		case type_ldouble:
+			snprintf(bufp, BUF_SIZE, "%s",
+					type_primitive_to_str(t->primitive));
+			break;
 
-	}else{
-		switch(t->primitive){
-			case type_void:
-			case type__Bool:
-			case type_nchar: case type_schar: case type_uchar:
-			case type_short: case type_ushort:
-			case type_int:   case type_uint:
-			case type_long:  case type_ulong:
-			case type_float:
-			case type_double:
-			case type_llong: case type_ullong:
-			case type_ldouble:
-				snprintf(bufp, BUF_SIZE, "%s",
-						type_primitive_to_str(t->primitive));
-				break;
+		case type_unknown:
+			ICE("unknown type primitive");
 
-			case type_unknown:
-				ICE("unknown type primitive");
-			case type_enum:
-			case type_struct:
-			case type_union:
-				ICE("struct/union/enum without ->sue");
-		}
+		case type_enum:
+		case type_struct:
+		case type_union:
+			snprintf(bufp, BUF_SIZE, "%s %s",
+					sue_str(t->sue),
+					t->sue->spel);
 	}
 
 	return buf;
@@ -215,7 +244,6 @@ unsigned type_primitive_size(enum type_primitive tp)
 		case type_uint:
 			return UCC_SZ_INT;
 
-		case type_enum:
 		case type_float:
 			return 4;
 
@@ -238,9 +266,10 @@ unsigned type_primitive_size(enum type_primitive tp)
 			ICW("TODO: long double");
 			return IS_32_BIT() ? 12 : 16;
 
+		case type_enum:
 		case type_union:
 		case type_struct:
-			ICE("s/u size");
+			ICE("s/u/e size");
 
 		case type_unknown:
 			break;

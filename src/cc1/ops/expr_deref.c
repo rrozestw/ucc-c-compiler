@@ -26,37 +26,36 @@ void fold_expr_deref(expr *e, symtable *stab)
 	}
 
 	if(expr_attr_present(ptr, attr_noderef))
-		warn_at(&ptr->where, "dereference of noderef expression");
-
-	/* check for *&x */
-	if(expr_kind(ptr, addr) && !ptr->expr_addr_implicit)
-		warn_at(&ptr->where, "possible optimisation for *& expression");
+		cc1_warn_at(&ptr->where, attr_noderef,
+				"dereference of noderef expression");
 
 	fold_check_bounds(ptr, 0);
 
-	e->tree_type = type_dereference_decay(ptr->tree_type);
+	e->tree_type = type_is_ptr(ptr->tree_type);
 }
 
-static const out_val *gen_expr_deref_lea(expr *e, out_ctx *octx)
+const out_val *gen_expr_deref(const expr *e, out_ctx *octx)
 {
-	/* a dereference */
-	return gen_expr(expr_deref_what(e), octx); /* skip over the *() bit */
+	/* lea - we're an lvalue */
+	return gen_expr(expr_deref_what(e), octx);
 }
 
-const out_val *gen_expr_deref(expr *e, out_ctx *octx)
+void dump_expr_deref(const expr *e, dump *ctx)
 {
-	return out_deref(
-			octx,
-			gen_expr_deref_lea(e, octx));
-}
+	expr *what = expr_deref_what(e);
 
-const out_val *gen_expr_str_deref(expr *e, out_ctx *octx)
-{
-	idt_printf("deref, size: %s\n", type_to_str(e->tree_type));
-	gen_str_indent++;
-	print_expr(expr_deref_what(e));
-	gen_str_indent--;
-	UNUSED_OCTX();
+	if(expr_kind(what, op) && what->bits.op.array_notation){
+		dump_desc_expr(ctx, "array subscript", e);
+		dump_inc(ctx);
+		dump_expr(what->lhs, ctx);
+		dump_expr(what->rhs, ctx);
+		dump_dec(ctx);
+	}else{
+		dump_desc_expr(ctx, "dereference", e);
+		dump_inc(ctx);
+		dump_expr(what, ctx);
+		dump_dec(ctx);
+	}
 }
 
 static void const_expr_deref(expr *e, consty *k)
@@ -69,6 +68,15 @@ static void const_expr_deref(expr *e, consty *k)
 		case CONST_STRK:
 		{
 			stringlit *sv = k->bits.str->lit;
+
+			/* check type we're supposed to be dereferencing as,
+			 * should be char *
+			 */
+			if(!type_is_primitive_anysign(type_is_ptr(from->tree_type), type_nchar)){
+				k->type = CONST_NO;
+				break;
+			}
+
 			if(k->offset < 0 || (unsigned)k->offset >= sv->len){
 				k->type = CONST_NO;
 			}else{
@@ -102,19 +110,11 @@ static void const_expr_deref(expr *e, consty *k)
 	}
 }
 
-static int expr_deref_islval(expr *e)
-{
-	(void)e;
-	return 1;
-}
-
 void mutate_expr_deref(expr *e)
 {
 	e->f_const_fold = const_expr_deref;
-	e->f_islval = expr_deref_islval;
 
-	/* unconditionally an lvalue */
-	e->f_lea = gen_expr_deref_lea;
+	e->f_islval = expr_is_lval_always;
 }
 
 expr *expr_new_deref(expr *of)
@@ -124,7 +124,7 @@ expr *expr_new_deref(expr *of)
 	return e;
 }
 
-const out_val *gen_expr_style_deref(expr *e, out_ctx *octx)
+const out_val *gen_expr_style_deref(const expr *e, out_ctx *octx)
 {
 	stylef("*(");
 	IGNORE_PRINTGEN(gen_expr(expr_deref_what(e), octx));

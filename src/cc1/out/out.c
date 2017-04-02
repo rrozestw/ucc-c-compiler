@@ -11,7 +11,6 @@
 #include "../../util/platform.h"
 #include "../pack.h"
 #include "../defs.h"
-#include "../opt.h"
 #include "../const.h"
 #include "../type_nav.h"
 #include "../type_is.h"
@@ -50,17 +49,6 @@
  * variadic logic is in impl_func_prologue_save_variadic
  */
 
-void out_dbg_label(out_ctx *octx, const char *lbl)
-{
-	out_blk *blk = octx->current_blk;
-	if(!blk){
-		assert(octx->last_used_blk);
-		blk = octx->last_used_blk;
-	}
-	out_dbg_flush(octx, blk);
-	blk_add_insn(blk, ustrprintf("%s:\n", lbl));
-}
-
 out_ctx *out_ctx_new(void)
 {
 	out_ctx *ctx = umalloc(sizeof *ctx);
@@ -72,18 +60,12 @@ out_ctx *out_ctx_new(void)
 	return ctx;
 }
 
-size_t out_expr_stack(out_ctx *octx)
+void **out_user_ctx(out_ctx *octx)
 {
-	out_val_list *l;
-	size_t retains = 0;
-
-	for(l = octx->val_head; l; l = l->next)
-		retains += l->val.retains;
-
-	return retains;
+	return &octx->userctx;
 }
 
-void out_dump_retained(out_ctx *octx, const char *desc)
+int out_dump_retained(out_ctx *octx, const char *desc)
 {
 	out_val_list *l;
 	int done_desc = 0;
@@ -104,6 +86,8 @@ void out_dump_retained(out_ctx *octx, const char *desc)
 				l->val.bits.regoff.reg.idx,
 				(void *)&l->val);
 	}
+
+	return done_desc;
 }
 
 void out_comment(out_ctx *octx, const char *fmt, ...)
@@ -114,10 +98,28 @@ void out_comment(out_ctx *octx, const char *fmt, ...)
 	va_end(l);
 }
 
+const char *out_val_str(const out_val *v, int deref)
+{
+	return impl_val_str(v, deref);
+}
+
 const out_val *out_cast(out_ctx *octx, const out_val *val, type *to, int normalise_bool)
 {
-	type *const from = val->t;
+	type *from = val->t;
 	char fp[2];
+
+	switch(val->type){
+		case V_REG:
+		case V_REG_SPILT:
+			if(val->bits.regoff.offset
+			&& type_size(val->t, NULL) != type_size(to, NULL))
+			{
+				/* must apply the offset in the current type */
+				val = v_reg_apply_offset(octx, val);
+			}
+		default:
+			break;
+	}
 
 	/* normalise before the cast, otherwise we do things like
 	 * 5.3 -> 5, then normalise 5, instead of 5.3 != 0.0
@@ -129,6 +131,10 @@ const out_val *out_cast(out_ctx *octx, const out_val *val, type *to, int normali
 			out_comment(octx, "out_cast done via normalise");
 			return val;
 		}
+
+		/* val may have changed type, e.g. float -> _Bool.
+		 * update `from' */
+		from = val->t;
 	}
 
 	fp[0] = type_is_floating(from);
@@ -235,6 +241,8 @@ const out_val *out_normalise(out_ctx *octx, const out_val *unnormal)
 		case V_CONST_F:
 			normalised->bits.val_i = !!normalised->bits.val_f;
 			normalised->type = V_CONST_I;
+			/* float to int - change .t */
+			normalised->t = type_nav_btype(cc1_type_nav, type__Bool);
 			break;
 
 		default:

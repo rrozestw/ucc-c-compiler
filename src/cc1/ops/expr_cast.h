@@ -1,11 +1,7 @@
-func_fold    fold_expr_cast;
-func_gen     gen_expr_cast;
-func_str     str_expr_cast;
-func_gen     gen_expr_str_cast;
-func_mutate_expr mutate_expr_cast;
-func_gen     gen_expr_style_cast;
+EXPR_DEFS(cast);
 
 #define expr_cast_child(e) ((e)->expr)
+#define expr_cast_is_lval2rval(e) (!(e)->bits.cast_to)
 
 void fold_expr_cast_descend(
 		expr *e, symtable *stab, int descend);

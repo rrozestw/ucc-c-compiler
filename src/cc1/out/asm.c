@@ -2,6 +2,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <stdlib.h>
+#include <assert.h>
 
 #include "../../util/util.h"
 #include "../../util/platform.h"
@@ -261,12 +262,31 @@ static void asm_declare_init(enum section_type sec, decl_init *init, type *tfor)
 		struct bitfield_val *bitfields = NULL;
 		unsigned nbitfields = 0;
 		decl *first_bf = NULL;
+		expr *copy_from_exp;
 
 		UCC_ASSERT(init->type == decl_init_brace, "unbraced struct");
 
 #define DEBUG(s, ...) /*fprintf(f, "\033[35m" s "\033[m\n", __VA_ARGS__)*/
 
 		i = init->bits.ar.inits;
+
+		/* check for compound-literal copy-init */
+		if((copy_from_exp = decl_init_is_struct_copy(init, sue))){
+			decl_init *copy_from_init;
+
+			copy_from_exp = expr_skip_lval2rval(copy_from_exp);
+
+			/* the only struct-expression that's possible
+			 * in static context is a compound literal */
+			assert(expr_kind(copy_from_exp, compound_lit)
+					&& "unhandled expression init");
+
+			copy_from_init = copy_from_exp->bits.complit.decl->bits.var.init.dinit;
+			assert(copy_from_init->type == decl_init_brace);
+
+			i = copy_from_init->bits.ar.inits;
+		}
+
 		/* iterate using members, not inits */
 		for(mem = sue->members;
 				mem && *mem;
@@ -533,10 +553,28 @@ void asm_declare_decl_init(decl *d)
 
 	sec = type_is_const(d->ref) ? SECTION_RODATA : SECTION_DATA;
 
-	if(d->bits.var.init && !decl_init_is_zero(d->bits.var.init)){
+	if(d->bits.var.init.dinit && !decl_init_is_zero(d->bits.var.init.dinit)){
 		asm_nam_begin(sec, d);
-		asm_declare_init(sec, d->bits.var.init, d->ref);
+		asm_declare_init(sec, d->bits.var.init.dinit, d->ref);
 		asm_out_section(sec, "\n");
+
+	}else if(d->bits.var.init.compiler_generated && fopt_mode & FOPT_COMMON){
+		const char *common_prefix = "comm ";
+
+		/* section doesn't matter */
+		sec = SECTION_BSS;
+
+		if(decl_linkage(d) == linkage_internal){
+			if(AS_SUPPORTS_LOCAL_COMMON){
+				asm_out_section(sec, ".local %s\n", decl_asm_spel(d));
+			}else{
+				common_prefix = "zerofill __DATA,__bss,";
+			}
+		}
+
+		asm_out_section(sec, ".%s%s,%u,%u\n",
+				common_prefix,
+				decl_asm_spel(d), decl_size(d), decl_align(d));
 
 	}else{
 		/* always resB, since we use decl_size() */
@@ -556,4 +594,9 @@ void asm_out_section(enum section_type t, const char *fmt, ...)
 	va_start(l, fmt);
 	asm_out_sectionv(t, fmt, l);
 	va_end(l);
+}
+
+int asm_section_empty(enum section_type t)
+{
+	return ftell(cc_out[t]) == 0;
 }

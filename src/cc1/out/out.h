@@ -12,8 +12,9 @@ out_ctx *out_ctx_new(void);
 void out_ctx_end(out_ctx *);
 void out_ctx_wipe(out_ctx *);
 
-size_t out_expr_stack(out_ctx *);
-void out_dump_retained(out_ctx *octx, const char *desc);
+void **out_user_ctx(out_ctx *);
+
+int out_dump_retained(out_ctx *octx, const char *desc);
 
 /* value creation */
 out_val *out_new_num(out_ctx *, type *t, const numeric *n)
@@ -32,8 +33,8 @@ out_val *out_new_blk_addr(out_ctx *, out_blk *) ucc_wur;
 
 out_val *out_new_noop(out_ctx *) ucc_wur;
 
-out_val *out_new_sym(out_ctx *, sym *) ucc_wur;
-out_val *out_new_sym_val(out_ctx *, sym *) ucc_wur;
+const out_val *out_new_sym(out_ctx *, sym *) ucc_wur;
+const out_val *out_new_sym_val(out_ctx *, sym *) ucc_wur;
 
 /* modifies expr/val and returns the overflow check expr/val */
 const out_val *out_new_overflow(out_ctx *, const out_val **) ucc_wur;
@@ -60,6 +61,9 @@ void out_store(out_ctx *, const out_val *dest, const out_val *val);
 
 void out_flush_volatile(out_ctx *, const out_val *);
 
+ucc_wur const out_val *out_annotate_likely(
+		out_ctx *, const out_val *, int unlikely);
+
 /* operators/comparisons */
 ucc_wur const out_val *out_op(out_ctx *, enum op_type, const out_val *lhs, const out_val *rhs);
 ucc_wur const out_val *out_op_unary(out_ctx *, enum op_type, const out_val *);
@@ -81,7 +85,7 @@ ucc_wur const out_val *out_change_type(out_ctx *, const out_val *, type *)
 ucc_wur const out_val *out_call(out_ctx *,
 		const out_val *fn, const out_val **args,
 		type *fnty)
-		ucc_nonnull((2, 3));
+		ucc_nonnull((1, 2, 4));
 
 
 /* control flow */
@@ -105,20 +109,43 @@ void out_ctrl_branch(
 		const out_val *cond,
 		out_blk *if_true, out_blk *if_false);
 
+void out_blk_mustgen(out_ctx *octx, out_blk *blk, char *force_lbl);
+
 /* maybe ret null */
 ucc_wur const out_val *out_ctrl_merge(out_ctx *, out_blk *, out_blk *);
 
+ucc_wur const out_val *out_ctrl_merge_n(out_ctx *, out_blk **rets);
 
 /* function setup */
 void out_func_prologue(
 		out_ctx *, const char *sp,
-		type *rf,
-		int stack_res, int nargs, int variadic,
-		int arg_offsets[], int *local_offset);
+		type *fnty,
+		int nargs, int variadic,
+		const out_val *argvals[]);
 
-void out_func_epilogue(out_ctx *, type *, char *end_dbg_lbl);
+void out_func_epilogue(
+		out_ctx *, type *, char *end_dbg_lbl,
+		int *out_usedstack);
+
+
+/* returns a pointer to allocated storage: */
+const out_val *out_alloca_push(out_ctx *, const out_val *sz, unsigned align);
+/* alloca_restore restores the stack for scope-leave.
+ * alloca_pop restores the stack and cleans up internal vla state */
+void out_alloca_restore(out_ctx *octx, const out_val *ptr);
+void out_alloca_pop(out_ctx *octx);
+
+const out_val *out_aalloc(out_ctx *, unsigned sz, unsigned align, type *);
+const out_val *out_aalloct(out_ctx *, type *);
+void out_adealloc(out_ctx *, const out_val **);
+
+
+const char *out_get_lbl(const out_val *) ucc_nonnull();
+int out_is_nonconst_temporary(const out_val *) ucc_nonnull();
+unsigned out_current_stack(out_ctx *); /* used in inlining */
 
 /* commenting */
 void out_comment(out_ctx *, const char *, ...) ucc_printflike(2, 3);
+const char *out_val_str(const out_val *, int deref);
 
 #endif

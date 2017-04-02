@@ -7,6 +7,7 @@
 #include "escape.h"
 #include "util.h"
 #include "str.h"
+#include "macros.h"
 
 typedef int digit_test(int);
 
@@ -24,6 +25,7 @@ int escape_char(int c)
 		{ 'v', '\v'  },
 		{ 'f', '\f'  },
 		{ '0', '\0'  },
+		{ 'a', '\a'  },
 		{ 'e', '\33' },
 		{ '\\', '\\' },
 		{ '\'', '\'' },
@@ -32,7 +34,7 @@ int escape_char(int c)
 	};
 	unsigned int i;
 
-	for(i = 0; i < sizeof(escapechars) / sizeof(escapechars[0]); i++)
+	for(i = 0; i < countof(escapechars); i++)
 		if(escapechars[i].from == c)
 			return escapechars[i].to;
 
@@ -142,7 +144,8 @@ long read_char_single(char *start, char **end, unsigned off)
 	if(c == '\\'){
 		char esc = tolower(*start);
 
-		if(esc == 'x' || esc == 'b' || isoct(esc)){
+		/* no binary here - only in numeric constants */
+		if(esc == 'x' || isoct(esc)){
 			int of; /* XXX: overflow ignored */
 
 			if(esc == 'x' || esc == 'b')
@@ -179,7 +182,7 @@ long read_char_single(char *start, char **end, unsigned off)
 
 long read_quoted_char(
 		char *start, char **end,
-		int *multichar)
+		int *multichar, int clip_256)
 {
 	unsigned long total = 0;
 	unsigned i;
@@ -196,7 +199,11 @@ long read_quoted_char(
 			die_at(NULL, "no terminating quote to character");
 
 		ch = read_char_single(start, &start, i);
-		total = (total * 256) + (0xff & ch);
+
+		if(clip_256)
+			total = (total * 256) + (0xff & ch);
+		else
+			total += ch;
 
 		if(*start == '\'')
 			break;

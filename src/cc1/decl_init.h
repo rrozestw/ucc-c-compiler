@@ -69,18 +69,18 @@ int decl_init_is_const(
 
 int decl_init_is_zero(decl_init *dinit);
 
+struct struct_union_enum_st;
+struct expr *decl_init_is_struct_copy(
+		decl_init *,
+		struct struct_union_enum_st *constraint);
+
 /* normalises braces */
-void decl_init_brace_up_fold(
-		struct decl *d, struct symtable *stab,
-		const int allow_initial_struct_copy);
+void decl_init_brace_up_fold(struct decl *d, struct symtable *stab);
 
 /* used for default initialising tenatives */
 void decl_default_init(struct decl *d, struct symtable *stab);
 
-/* creates assignment exprs - only used for local inits */
-void decl_init_create_assignments_base(
-		decl_init *init,
-		struct type *tfor, struct expr *base,
-		struct stmt *code);
+void decl_init_create_assignments_base_and_fold(
+		struct decl *d, struct expr *base, struct symtable *scope);
 
 #endif

@@ -258,7 +258,7 @@ static void runner_1(int local, char *path, char *in, char *out, char **args)
 
 	runner(local, path, all);
 
-	dynarray_free(char **, &all, NULL);
+	dynarray_free(char **, all, NULL);
 }
 
 void preproc(char *in, char *out, char **args)
@@ -286,9 +286,12 @@ void preproc(char *in, char *out, char **args)
 			free(this);
 	}
 
-	runner_1(1, "cpp2/cpp", in, out, all);
+	if(fsystem_cpp)
+		runner_1(0, "cpp", in, out, all);
+	else
+		runner_1(1, "cpp2/cpp", in, out, all);
 
-	dynarray_free(char **, &all, NULL);
+	dynarray_free(char **, all, NULL);
 }
 
 void compile(char *in, char *out, char **args)
@@ -305,7 +308,7 @@ void assemble(char *in, char *out, char **args)
 
 	runner_1(0, UCC_AS, in, out, copy);
 
-	dynarray_free(char **, &copy, NULL);
+	dynarray_free(char **, copy, NULL);
 }
 
 void link_all(char **objs, char *out, char **args)
@@ -328,7 +331,7 @@ void link_all(char **objs, char *out, char **args)
 
 	runner(0, "ld", all);
 
-	dynarray_free(char **, &all, NULL);
+	dynarray_free(char **, all, NULL);
 }
 
 void dsym(char *exe)

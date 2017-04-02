@@ -1,3 +1,4 @@
+#define _POSIX_SOURCE 1 /* fdopen */
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
@@ -5,113 +6,74 @@
 #include <stdlib.h>
 #include <math.h>
 #include <ctype.h>
+#include <assert.h>
 
 #include <unistd.h>
 #include <signal.h>
 
 #include "../util/util.h"
 #include "../util/platform.h"
+#include "../util/math.h"
+#include "../util/dynarray.h"
+#include "../util/tmpfile.h"
+#include "../util/alloc.h"
+#include "../util/macros.h"
+
 #include "tokenise.h"
 #include "cc1.h"
 #include "fold.h"
+#include "out/asm.h" /* NUM_SECTIONS */
+#include "out/dbg.h" /* dbg_out_filelist() */
 #include "gen_asm.h"
-#include "gen_str.h"
+#include "gen_dump.h"
 #include "gen_style.h"
 #include "sym.h"
 #include "fold_sym.h"
 #include "ops/__builtin.h"
 #include "out/asm.h" /* NUM_SECTIONS */
-#include "opt.h"
 #include "pass1.h"
 #include "type_nav.h"
 #include "cc1_where.h"
 
 #include "../as_cfg.h"
 
-struct opt_flags cc1_opts;
+struct cc1_warning cc1_warning;
+enum warning_fatality
+{
+	W_OFF = 0,
+	W_WARN = 1,
+	W_ERROR = 2, /* set by -Werror */
 
-struct
+	W_NO_ERROR = 3
+	/* set by -Wno-error=xyz
+	 * not reset to W_WARN since -Werror/-Wno-error will alter this */
+};
+
+enum warning_special
+{
+	W_ALL, W_EXTRA, W_EVERYTHING, W_GNU
+};
+
+static const char **system_includes;
+
+static struct warn_str
+{
+	const char *arg;
+	unsigned char *offsets[3];
+} warns[] = {
+#define X(arg, ...) { arg, __VA_ARGS__ },
+#include "warnings.def"
+#undef X
+	{ NULL, NULL }
+};
+
+
+static struct
 {
 	char type;
 	const char *arg;
 	int mask;
-} args[] = {
-	/* TODO - wall picks sensible, extra = more, everything = ~0 */
-	{ 'W',  "all",             ~0 },
-	{ 'W',  "extra",            0 },
-	{ 'W',  "everything",      ~0 },
-
-
-	{ 'W',  "mismatch-arg",    WARN_ARG_MISMATCH                      },
-	{ 'W',  "array-comma",     WARN_ARRAY_COMMA                       },
-	{ 'W',  "mismatch-assign", WARN_ASSIGN_MISMATCH | WARN_COMPARE_MISMATCH | WARN_RETURN_TYPE },
-	{ 'W',  "return-type",     WARN_RETURN_TYPE                       },
-
-	{ 'W',  "sign-compare",    WARN_SIGN_COMPARE                      },
-	{ 'W',  "extern-assume",   WARN_EXTERN_ASSUME                     },
-
-	{ 'W',  "implicit-int",    WARN_IMPLICIT_INT                      },
-	{ 'W',  "implicit-func",   WARN_IMPLICIT_FUNC                     },
-	{ 'W',  "implicit",        WARN_IMPLICIT_FUNC | WARN_IMPLICIT_INT },
-
-	{ 'W',  "switch-enum",     WARN_SWITCH_ENUM                       },
-	{ 'W',  "enum-compare",    WARN_ENUM_CMP                          },
-
-	{ 'W',  "incomplete-use",  WARN_INCOMPLETE_USE                    },
-
-	{ 'W',  "unused-expr",     WARN_UNUSED_EXPR                       },
-
-	{ 'W',  "test-in-assign",  WARN_TEST_ASSIGN                       },
-	{ 'W',  "test-bool",       WARN_TEST_BOOL                         },
-
-	{ 'W',  "dead-code",       WARN_DEAD_CODE                         },
-
-	{ 'W',  "predecl-enum",    WARN_PREDECL_ENUM,                     },
-
-
-	{ 'W', "mixed-code-decls", WARN_MIXED_CODE_DECLS                  },
-
-	{ 'W', "loss-of-precision", WARN_LOSS_PRECISION                   },
-
-	{ 'W', "pad",               WARN_PAD },
-
-	{ 'W', "tenative-init",     WARN_TENATIVE_INIT },
-
-	{ 'W', "shadow-local",      WARN_SHADOW_LOCAL },
-	{ 'W', "shadow-global",     WARN_SHADOW_GLOBAL },
-	{ 'W', "shadow",            WARN_SHADOW_GLOBAL | WARN_SHADOW_LOCAL },
-
-	/* TODO: W_QUAL (ops/expr_cast) */
-
-#if 0
-	/* TODO */
-	{ 'W',  "unused-parameter", WARN_UNUSED_PARAM },
-	{ 'W',  "unused-variable",  WARN_UNUSED_VAR   },
-	{ 'W',  "unused-value",     WARN_UNUSED_VAL   },
-	{ 'W',  "unused",           WARN_UNUSED_PARAM | WARN_UNUSED_VAR | WARN_UNUSED_VAL },
-
-	/* TODO */
-	{ 'W',  "uninitialised",    WARN_UNINITIALISED },
-
-	/* TODO */
-	{ 'W',  "array-bounds",     WARN_ARRAY_BOUNDS },
-
-	/* TODO */
-	{ 'W',  "shadow",           WARN_SHADOW },
-
-	/* TODO */
-	{ 'W',  "format",           WARN_FORMAT },
-
-	/* TODO */
-	{ 'W',  "pointer-arith",    WARN_PTR_ARITH  }, /* void *x; x++; */
-	{ 'W',  "int-ptr-cast",     WARN_INT_TO_PTR },
-#endif
-
-	{ 'W',  "optimisation",     WARN_OPT_POSSIBLE },
-
-
-/* --- options --- */
-
+} fopts[] = {
 	{ 'f',  "enable-asm",    FOPT_ENABLE_ASM      },
 	{ 'f',  "const-fold",    FOPT_CONST_FOLD      },
 	{ 'f',  "english",       FOPT_ENGLISH         },
@@ -134,13 +96,26 @@ struct
 	{ 'f',  "cast-with-builtin-types", FOPT_CAST_W_BUILTIN_TYPES },
 	{ 'f',  "dump-type-tree", FOPT_DUMP_TYPE_TREE },
 	{ 'f',  "asm", FOPT_EXT_KEYWORDS },
+	{ 'f',  "gnu-keywords", FOPT_EXT_KEYWORDS },
+	{ 'f',  "fold-const-vlas", FOPT_FOLD_CONST_VLAS },
+	{ 'f',  "show-warning-option", FOPT_SHOW_WARNING_OPTION },
+	{ 'f',  "print-typedefs", FOPT_PRINT_TYPEDEFS },
+	{ 'f',  "print-aka", FOPT_PRINT_AKA },
+	{ 'f',  "show-inlined", FOPT_SHOW_INLINED },
+	{ 'f',  "inline-functions", FOPT_INLINE_FUNCTIONS },
+	{ 'f',  "dump-bblocks", FOPT_DUMP_BASIC_BLOCKS },
+	{ 'f',  "dump-symtab", FOPT_DUMP_SYMTAB },
+	{ 'f',  "dump-init", FOPT_DUMP_INIT },
+	{ 'f',  "common", FOPT_COMMON },
 
 	{ 'm',  "stackrealign", MOPT_STACK_REALIGN },
+	{ 'm',  "32", MOPT_32 },
+	{ 'm',  "64", ~MOPT_32 },
 
 	{ 0,  NULL, 0 }
 };
 
-struct
+static struct
 {
 	char pref;
 	const char *arg;
@@ -153,30 +128,21 @@ struct
 };
 
 FILE *cc_out[NUM_SECTIONS];     /* temporary section files */
-char  fnames[NUM_SECTIONS][32]; /* duh */
 FILE *cc1_out;                  /* final output */
 char *cc1_first_fname;
-
-enum warning warn_mode = ~(
-		  WARN_VOID_ARITH
-		| WARN_IMPLICIT_INT
-		| WARN_LOSS_PRECISION
-		| WARN_SIGN_COMPARE
-		| WARN_PAD
-		| WARN_TENATIVE_INIT
-		| WARN_SHADOW_GLOBAL
-		| WARN_IMPLICIT_OLD_FUNC
-		);
 
 enum fopt fopt_mode = FOPT_CONST_FOLD
                     | FOPT_SHOW_LINE
                     | FOPT_PIC
                     | FOPT_BUILTIN
-										| FOPT_TRACK_INITIAL_FNAM
-										| FOPT_INTEGRAL_FLOAT_LOAD
-										| FOPT_SYMBOL_ARITH
-										| FOPT_SIGNED_CHAR
-                    | FOPT_CAST_W_BUILTIN_TYPES;
+                    | FOPT_TRACK_INITIAL_FNAM
+                    | FOPT_INTEGRAL_FLOAT_LOAD
+                    | FOPT_SYMBOL_ARITH
+                    | FOPT_SIGNED_CHAR
+                    | FOPT_CAST_W_BUILTIN_TYPES
+                    | FOPT_PRINT_TYPEDEFS
+                    | FOPT_PRINT_AKA
+                    | FOPT_COMMON;
 
 enum cc1_backend cc1_backend = BACKEND_ASM;
 
@@ -189,7 +155,7 @@ enum c_std cc1_std = STD_C99;
 
 int cc1_error_limit = 16;
 
-int caught_sig = 0;
+static int caught_sig = 0;
 
 int show_current_line;
 
@@ -208,7 +174,6 @@ static FILE *infile;
 /* compile time check for enum <-> int compat */
 #define COMP_CHECK(pre, test) \
 struct unused_ ## pre { char check[test ? -1 : 1]; }
-COMP_CHECK(a, sizeof warn_mode != sizeof(int));
 COMP_CHECK(b, sizeof fopt_mode != sizeof(int));
 
 
@@ -230,8 +195,8 @@ static void ccdie(int verbose, const char *fmt, ...)
 
 	if(verbose){
 		fputs("warnings + options:\n", stderr);
-		for(i = 0; args[i].arg; i++)
-			fprintf(stderr, "  -%c%s\n", args[i].type, args[i].arg);
+		for(i = 0; fopts[i].arg; i++)
+			fprintf(stderr, "  -%c%s\n", fopts[i].type, fopts[i].arg);
 		for(i = 0; val_args[i].arg; i++)
 			fprintf(stderr, "  -%c%s=value\n", val_args[i].pref, val_args[i].arg);
 	}
@@ -239,37 +204,83 @@ static void ccdie(int verbose, const char *fmt, ...)
 	exit(1);
 }
 
-void cc1_warn_atv(struct where *where, int die, enum warning w, const char *fmt, va_list l)
+static void show_warn_option(unsigned char *pwarn)
 {
-	if(!die && (w & warn_mode) == 0)
-		return;
+	struct warn_str *p;
 
-	vwarn(where, die, fmt, l);
-
-	if(die)
-		exit(1);
+	for(p = warns; p->arg; p++){
+		unsigned i;
+		for(i = 0; i < countof(p->offsets) && p->offsets[i]; i++){
+			if(pwarn == p->offsets[i]){
+				fprintf(stderr, "[-W%s]\n", p->arg);
+				break;
+			}
+		}
+	}
 }
 
-void cc1_warn_at(struct where *where, int die, enum warning w, const char *fmt, ...)
+int where_in_sysheader(const where *w)
+{
+	const char **i;
+
+	if(!w->fname)
+		return 0;
+
+	for(i = system_includes; i && *i; i++)
+		if(!strncmp(w->fname, *i, strlen(*i)))
+			return 1;
+
+	return 0;
+}
+
+void cc1_warn_at_w(
+		const struct where *where, unsigned char *pwarn,
+		const char *fmt, ...)
 {
 	va_list l;
+	struct where backup;
+	enum warn_type warn_type = VWARN_WARN;
+
+	switch((enum warning_fatality)*pwarn){
+		case W_OFF:
+			return;
+		case W_ERROR:
+			fold_had_error = parse_had_error = 1;
+			warn_type = VWARN_ERR;
+			break;
+		case W_NO_ERROR:
+		case W_WARN:
+			break;
+	}
+
+	if(!where)
+		where = where_cc1_current(&backup);
+
+	/* don't emit warnings from system headers */
+	if(where_in_sysheader(where))
+		return;
 
 	va_start(l, fmt);
-	cc1_warn_atv(where, die, w, fmt, l);
+	vwarn(where, warn_type, fmt, l);
 	va_end(l);
+
+	if(fopt_mode & FOPT_SHOW_WARNING_OPTION)
+		show_warn_option(pwarn);
 }
 
 static void io_cleanup(void)
 {
 	int i;
+
+	if(caught_sig)
+		return;
+
 	for(i = 0; i < NUM_SECTIONS; i++){
 		if(!cc_out[i])
 			continue;
 
-		if(fclose(cc_out[i]) == EOF && !caught_sig)
-			fprintf(stderr, "close %s: %s\n", fnames[i], strerror(errno));
-		if(remove(fnames[i]) && !caught_sig)
-			fprintf(stderr, "remove %s: %s\n", fnames[i], strerror(errno));
+		if(fclose(cc_out[i]) == EOF)
+			fprintf(stderr, "close tmpfile: %s\n", strerror(errno));
 	}
 }
 
@@ -281,11 +292,19 @@ static void io_setup(void)
 		cc1_out = stdout;
 
 	for(i = 0; i < NUM_SECTIONS; i++){
-		snprintf(fnames[i], sizeof fnames[i], "/tmp/cc1_%d%d", getpid(), i);
+		char *fname;
+		int fd = tmpfile_prefix_out("cc1_", &fname);
 
-		cc_out[i] = fopen(fnames[i], "w+"); /* need to seek */
-		if(!cc_out[i])
-			ccdie(0, "open \"%s\":", fnames[i]);
+		if(fd < 0)
+			ccdie(0, "tmpfile(%s):", fname);
+
+		if(remove(fname) != 0)
+			fprintf(stderr, "remove %s: %s\n", fname, strerror(errno));
+
+		cc_out[i] = fdopen(fd, "w+"); /* need to seek */
+		assert(cc_out[i]);
+
+		free(fname);
 	}
 
 	atexit(io_cleanup);
@@ -299,7 +318,15 @@ static void io_fin(int do_sections, const char *fname)
 
 	for(i = 0; i < NUM_SECTIONS; i++){
 		/* cat cc_out[i] to cc1_out, with section headers */
-		if(do_sections){
+		int emit_this_section = 1;
+
+		if(cc1_gdebug && (i == SECTION_TEXT || i == SECTION_DBG_LINE)){
+			/* need .text for debug to reference */
+		}else if(asm_section_empty(i)){
+			emit_this_section = 0;
+		}
+
+		if(do_sections && emit_this_section){
 			char buf[256];
 			long last = ftell(cc_out[i]);
 
@@ -337,7 +364,7 @@ static void sigh(int sig)
 
 static char *next_line()
 {
-	char *s = fline(infile);
+	char *s = fline(infile, NULL);
 	char *p;
 
 	if(!s){
@@ -354,18 +381,345 @@ static char *next_line()
 	return s;
 }
 
+static void gen_backend(symtable_global *globs, const char *fname)
+{
+	void (*gf)(symtable_global *) = NULL;
+
+	switch(cc1_backend){
+		case BACKEND_STYLE:
+			gf = gen_style;
+			if(0){
+		case BACKEND_DUMP:
+				gf = gen_dump;
+			}
+			gf(globs);
+			break;
+
+		case BACKEND_ASM:
+		{
+			char buf[4096];
+			char *compdir;
+			struct out_dbg_filelist *filelist;
+
+			compdir = getcwd(NULL, 0);
+			if(!compdir){
+				/* no auto-malloc */
+				compdir = getcwd(buf, sizeof(buf)-1);
+				/* PATH_MAX may not include the  ^ nul byte */
+				if(!compdir)
+					die("getcwd():");
+			}
+
+			gen_asm(globs,
+					cc1_first_fname ? cc1_first_fname : fname,
+					compdir,
+					&filelist);
+
+			/* filelist needs to be output first */
+			if(filelist && cc1_gdebug)
+				dbg_out_filelist(filelist, cc1_out);
+
+
+			if(compdir != buf)
+				free(compdir);
+			break;
+		}
+	}
+
+	io_fin(gf == NULL, fname);
+}
+
+static void warnings_set(enum warning_fatality to)
+{
+	memset(&cc1_warning, to, sizeof cc1_warning);
+}
+
+static void warning_gnu(enum warning_fatality set)
+{
+	cc1_warning.gnu_addr_lbl =
+	cc1_warning.gnu_expr_stmt =
+	cc1_warning.gnu_typeof =
+	cc1_warning.gnu_attribute =
+	cc1_warning.gnu_init_array_range =
+	cc1_warning.gnu_case_range =
+	cc1_warning.gnu_alignof_expr =
+	cc1_warning.gnu_empty_init =
+		set;
+}
+
+static void warning_pedantic(enum warning_fatality set)
+{
+	/* warn about extensions */
+	warning_gnu(set);
+
+	cc1_warning.nonstd_arraysz =
+	cc1_warning.nonstd_init =
+
+	cc1_warning.x__func__init =
+	cc1_warning.typedef_fnimpl =
+	cc1_warning.flexarr_only =
+	cc1_warning.decl_nodecl =
+	cc1_warning.overlarge_enumerator_int =
+
+	cc1_warning.attr_printf_voidp =
+
+	cc1_warning.return_void =
+	cc1_warning.binary_literal =
+		set;
+}
+
+static void warning_all(void)
+{
+	warnings_set(W_WARN);
+
+	warning_gnu(W_OFF);
+
+	cc1_warning.implicit_int =
+	cc1_warning.loss_precision =
+	cc1_warning.sign_compare =
+	cc1_warning.pad =
+	cc1_warning.tenative_init =
+	cc1_warning.shadow_global_user =
+	cc1_warning.shadow_global_all =
+	cc1_warning.implicit_old_func =
+	cc1_warning.bitfield_boundary =
+	cc1_warning.vla =
+	cc1_warning.init_missing_struct_zero =
+	cc1_warning.pure_inline =
+	cc1_warning.unused_param =
+	cc1_warning.test_assign =
+	cc1_warning.signed_unsigned =
+	cc1_warning.unused_fnret =
+	cc1_warning.binary_literal =
+	cc1_warning.missing_prototype =
+	cc1_warning.missing_variable_decls =
+	cc1_warning.null_zero_literal =
+	cc1_warning.enum_out_of_range =
+	cc1_warning.enum_mismatch_int =
+		W_OFF;
+}
+
+static void warning_init(void)
+{
+	/* default to -Wall */
+	warning_all();
+	warning_pedantic(W_OFF);
+
+	/* but with warnings about std compatability on too */
+	cc1_warning.typedef_redef =
+	cc1_warning.c89_parse_trailingcomma =
+	cc1_warning.unnamed_struct_memb =
+	cc1_warning.c89_for_init =
+	cc1_warning.mixed_code_decls =
+	cc1_warning.c89_init_constexpr =
+	cc1_warning.long_long =
+	cc1_warning.c89_vla =
+	cc1_warning.c89_compound_literal =
+			W_WARN;
+}
+
+static void warning_special(enum warning_special type)
+{
+	switch(type){
+		case W_EVERYTHING:
+			warnings_set(W_WARN);
+			break;
+		case W_ALL:
+			warning_all();
+			break;
+		case W_EXTRA:
+			warning_all();
+			cc1_warning.implicit_int =
+			cc1_warning.shadow_global_user =
+			cc1_warning.cast_qual =
+			cc1_warning.init_missing_braces =
+			cc1_warning.init_missing_struct =
+			cc1_warning.unused_param =
+			cc1_warning.signed_unsigned =
+				W_WARN;
+			break;
+		case W_GNU:
+			warning_gnu(W_WARN);
+			break;
+	}
+}
+
+static void warning_unknown(const char *warg, dynmap *unknowns)
+{
+	char *dup_warg = ustrdup(warg);
+
+	int present = dynmap_set(
+			char *, intptr_t,
+			unknowns, dup_warg, (intptr_t)1);
+
+	if(present)
+		free(dup_warg);
+}
+
+static void warning_on(
+		const char *warn, enum warning_fatality to,
+		int *const werror, dynmap *unknowns)
+{
+	struct warn_str *p;
+
+#define SPECIAL(str, w)   \
+	if(!strcmp(warn, str)){ \
+		warning_special(w);   \
+		return;               \
+	}
+
+	SPECIAL("all", W_ALL)
+	SPECIAL("extra", W_EXTRA)
+	SPECIAL("everything", W_EVERYTHING)
+	SPECIAL("gnu", W_GNU)
+
+	if(!strncmp(warn, "error", 5)){
+		const char *werr = warn + 5;
+
+		switch(*werr){
+			case '\0':
+				/* set later once we know all the desired warnings */
+				*werror = (to != W_OFF);
+				break;
+
+			case '=':
+				if(to == W_OFF){
+					/* force to non-error */
+					warning_on(werr + 1, W_NO_ERROR, werror, unknowns);
+				}else{
+					warning_on(werr + 1, W_ERROR, werror, unknowns);
+				}
+				break;
+
+			default:
+				warning_unknown(warn, unknowns);
+		}
+		return;
+	}
+
+
+	for(p = warns; p->arg; p++){
+		if(!strcmp(warn, p->arg)){
+			unsigned i;
+			for(i = 0; i < countof(p->offsets); i++){
+				if(!p->offsets[i])
+					break;
+
+				*p->offsets[i] = to;
+			}
+			return;
+		}
+	}
+
+	warning_unknown(warn, unknowns);
+}
+
+static int optimise(const char *argv0, const char *arg)
+{
+	/* TODO: -fdce, -fthread-jumps, -falign-{functions,jumps,loops,labels}
+	 * -fdelete-null-pointer-checks, -freorder-blocks
+	 */
+	enum { O0, O1, O2, O3, Os } opt = O0;
+	struct
+	{
+		unsigned enable, disable;
+	} mask = { 0, 0 };
+
+	if(!*arg){
+		/* -O means -O2 */
+		opt = O2;
+	}else if(arg[1]){
+		goto unrecog;
+	}else switch(arg[0]){
+		default:
+			goto unrecog;
+
+		case '0': opt = O0; break;
+		case '1': opt = O1; break;
+		case '2': opt = O2; break;
+		case '3': opt = O3; break;
+		case 's': opt = Os; break;
+	}
+
+	switch(opt){
+		case O0:
+			break;
+
+		case Os:
+			/* same as -O2 but disable inlining and int-float-load */
+			mask.disable = FOPT_INLINE_FUNCTIONS
+				| FOPT_INTEGRAL_FLOAT_LOAD;
+			/* fall */
+
+		case O1:
+		case O2:
+		case O3:
+			mask.enable = FOPT_FOLD_CONST_VLAS
+				| FOPT_INLINE_FUNCTIONS
+				| FOPT_INTEGRAL_FLOAT_LOAD;
+			break;
+	}
+
+	/* enable, then disable (to allow -Os to turn bits off from -O2 etc) */
+	fopt_mode |= mask.enable;
+	fopt_mode &= ~mask.disable;
+
+	return 0;
+unrecog:
+	fprintf(stderr, "%s: unrecognised optimisation flag -O%c\n", argv0, arg[0]);
+	return 1;
+}
+
+static void warnings_upgrade(void)
+{
+	struct warn_str *p;
+	unsigned i;
+
+	/* easier to iterate through this array, than cc1_warning's members */
+	for(p = warns; p->arg; p++)
+		for(i = 0; i < countof(p->offsets) && p->offsets[i]; i++)
+			if(*p->offsets[i] == W_WARN)
+				*p->offsets[i] = W_ERROR;
+}
+
+static int warnings_check_unknown(dynmap *unknown_warnings)
+{
+	where loc = { 0 };
+	int hard_error = 0, got_unknown = 0;
+	char *key;
+	size_t i;
+
+	loc.fname = "<command line>";
+
+	switch(cc1_warning.unknown_warning_option){
+		case W_OFF:
+			return 0;
+		case W_WARN:
+		case W_NO_ERROR:
+			break;
+		case W_ERROR:
+			hard_error = 1;
+			break;
+	}
+
+	for(i = 0; (key = dynmap_key(char *, unknown_warnings, i)); i++){
+		cc1_warn_at(&loc, unknown_warning_option,
+				"unknown warning option: \"%s\"", key);
+		got_unknown = 1;
+	}
+
+	return hard_error && got_unknown;
+}
+
 int main(int argc, char **argv)
 {
+	int failure;
 	where loc_start;
 	static symtable_global *globs;
-	void (*gf)(symtable_global *) = NULL;
 	const char *fname;
 	int i;
 	int werror = 0;
-
-	/* TODO: -O[0-3] parsing and
-	 * -fremain-stack, etc */
-	cc1_opts.opt_remain_stack = 1;
+	dynmap *unknown_warnings = dynmap_new(char *, strcmp, dynmap_strhash);
 
 	/*signal(SIGINT , sigh);*/
 	signal(SIGQUIT, sigh);
@@ -376,18 +730,34 @@ int main(int argc, char **argv)
 	fname = NULL;
 
 	/* defaults */
-	cc1_mstack_align = log2f(platform_word_size());
+	cc1_mstack_align = log2i(platform_word_size());
+	warning_init();
 
 	for(i = 1; i < argc; i++){
-		if(!strcmp(argv[i], "-X")){
-			if(++i == argc)
-				goto usage;
+		if(!strncmp(argv[i], "-emit", 5)){
+			const char *emit;
 
-			if(!strcmp(argv[i], "print"))
-				cc1_backend = BACKEND_PRINT;
-			else if(!strcmp(argv[i], "asm"))
+			switch(argv[i][5]){
+				case '=':
+					emit = argv[i] + 6;
+					break;
+
+				case '\0':
+					if(++i == argc)
+						goto usage;
+					emit = argv[i];
+					break;
+
+				default:
+					goto usage;
+			}
+
+
+			if(!strcmp(emit, "dump") || !strcmp(emit, "print"))
+				cc1_backend = BACKEND_DUMP;
+			else if(!strcmp(emit, "asm"))
 				cc1_backend = BACKEND_ASM;
-			else if(!strcmp(argv[i], "style"))
+			else if(!strcmp(emit, "style"))
 				cc1_backend = BACKEND_STYLE;
 			else
 				goto usage;
@@ -403,7 +773,7 @@ int main(int argc, char **argv)
 				cc1_out = fopen(argv[i], "w");
 				if(!cc1_out){
 					ccdie(0, "open %s:", argv[i]);
-					return 1;
+					goto out;
 				}
 			}
 
@@ -419,10 +789,10 @@ int main(int argc, char **argv)
 				fopt_mode &= ~FOPT_EXT_KEYWORDS;
 
 		}else if(!strcmp(argv[i], "-w")){
-			warn_mode = WARN_NONE;
+			warnings_set(W_OFF);
 
-		}else if(!strcmp(argv[i], "-Werror")){
-			werror = 1;
+		}else if(!strcmp(argv[i], "-pedantic")){
+			warning_pedantic(W_WARN);
 
 		}else if(argv[i][0] == '-'
 		&& (argv[i][1] == 'W' || argv[i][1] == 'f' || argv[i][1] == 'm')){
@@ -469,9 +839,6 @@ int main(int argc, char **argv)
 			}
 
 			switch(arg_ty){
-				case 'W':
-					mask = (int *)&warn_mode;
-					break;
 				case 'f':
 					mask = (int *)&fopt_mode;
 					break;
@@ -480,28 +847,29 @@ int main(int argc, char **argv)
 					break;
 				default:
 					ucc_unreach(1);
+
+				case 'W':
+					warning_on(arg, rev ? W_OFF : W_WARN, &werror, unknown_warnings);
+					continue;
 			}
 
-			for(j = 0; args[j].arg; j++)
-				if(args[j].type == arg_ty && !strcmp(arg, args[j].arg)){
+			for(j = 0; fopts[j].arg; j++)
+				if(fopts[j].type == arg_ty && !strcmp(arg, fopts[j].arg)){
 					/* if the mask isn't a single bit, treat it as
 					 * an unmask, e.g. -funsigned-char unmasks FOPT_SIGNED_CHAR
-					 *
-					 * special case where we don't - warnings
 					 */
-					const int unmask = args[j].type != 'W'
-						&& args[j].mask & (args[j].mask - 1);
+					const int unmask = fopts[j].mask & (fopts[j].mask - 1);
 
 					if(rev){
 						if(unmask)
-							*mask |= ~args[j].mask;
+							*mask |= ~fopts[j].mask;
 						else
-							*mask &= ~args[j].mask;
+							*mask &= ~fopts[j].mask;
 					}else{
 						if(unmask)
-							*mask &= args[j].mask;
+							*mask &= fopts[j].mask;
 						else
-							*mask |= args[j].mask;
+							*mask |= fopts[j].mask;
 					}
 					found = 1;
 					break;
@@ -513,18 +881,13 @@ unrecognised:
 				goto usage;
 			}
 
-		}else if(!strncmp(argv[i], "-m", 2)){
-			int n;
+		}else if(!strncmp(argv[i], "-I", 2)){
+			/* these are system headers only - we don't get the full set */
+			dynarray_add(&system_includes, (const char *)argv[i] + 2);
 
-			if(sscanf(argv[i] + 2, "%d", &n) != 1 || (n != 32 && n != 64)){
-				fprintf(stderr, "-m needs either 32 or 64\n");
-				goto usage;
-			}
-
-			if(n == 32)
-				mopt_mode |= MOPT_32;
-			else
-				mopt_mode &= ~MOPT_32;
+		}else if(!strncmp(argv[i], "-O", 2)){
+			if(optimise(*argv, argv[i] + 2))
+				exit(1);
 
 		}else if(!fname){
 			fname = argv[i];
@@ -539,9 +902,17 @@ usage:
 		const unsigned new = powf(2, cc1_mstack_align);
 		if(new < platform_word_size())
 			ccdie(0, "stack alignment must be >= platform word size (2^%d)",
-					(int)log2f(platform_word_size()));
+					log2i(platform_word_size()));
 
 		cc1_mstack_align = new;
+	}
+
+	if(werror)
+		warnings_upgrade();
+
+	if(warnings_check_unknown(unknown_warnings)){
+		failure = 1;
+		goto out;
 	}
 
 	if(fname && strcmp(fname, "-")){
@@ -568,53 +939,29 @@ usage:
 	where_cc1_current(&loc_start);
 	globs = symtabg_new(&loc_start);
 
-	parse_and_fold(globs);
+	failure = parse_and_fold(globs);
 
 	if(infile != stdin)
 		fclose(infile), infile = NULL;
 
-	if(werror && warning_count)
-		ccdie(0, "%s: Treating warnings as errors", *argv);
-
-	switch(cc1_backend){
-		case BACKEND_STYLE:
-			gf = gen_style;
-			if(0){
-		case BACKEND_PRINT:
-				gf = gen_str;
-			}
-			gf(globs);
-			break;
-
-		case BACKEND_ASM:
-		{
-			char buf[4096];
-			char *compdir;
-
-			compdir = getcwd(NULL, 0);
-			if(!compdir){
-				/* no auto-malloc */
-				compdir = getcwd(buf, sizeof(buf)-1);
-				/* PATH_MAX may not include the  ^ nul byte */
-				if(!compdir)
-					die("getcwd():");
-			}
-
-			gen_asm(globs,
-					cc1_first_fname ? cc1_first_fname : fname,
-					compdir);
-
-			if(compdir != buf)
-				free(compdir);
-			break;
-		}
+	if(failure == 0 || /* attempt dump anyway */cc1_backend == BACKEND_DUMP){
+		gen_backend(globs, fname);
+		if(gen_had_error)
+			failure = 1;
 	}
-
-
-	io_fin(gf == NULL, fname);
 
 	if(fopt_mode & FOPT_DUMP_TYPE_TREE)
 		type_nav_dump(cc1_type_nav);
 
-	return 0;
+out:
+	dynarray_free(const char **, system_includes, NULL);
+	{
+		size_t i;
+		char *key;
+		for(i = 0; (key = dynmap_key(char *, unknown_warnings, i)); i++)
+			free(key);
+		dynmap_free(unknown_warnings);
+	}
+
+	return failure;
 }

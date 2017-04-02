@@ -40,6 +40,7 @@ UCC_CPU     = ${UCC_CPU}
 
 		ASM_WEAK_DIRECTIVE='weak_reference'
 		# Darwin also needs "-flat_namespace -undefined suppress"
+		AS_SUPPORTS_LOCAL_COMMON=0
 	else
 		SECTION_TEXT=".text"
 		SECTION_DATA=".data"
@@ -50,6 +51,7 @@ UCC_CPU     = ${UCC_CPU}
 		SECTION_DBG_LINE=".debug_line"
 		DWARF_INDIRECT_SECTION_LINKS=0
 		ASM_WEAK_DIRECTIVE='weak'
+		AS_SUPPORTS_LOCAL_COMMON=1
 	fi
 
 	cat > src/as_cfg.h <<!
@@ -64,6 +66,7 @@ UCC_CPU     = ${UCC_CPU}
 #define DWARF_INDIRECT_SECTION_LINKS $DWARF_INDIRECT_SECTION_LINKS
 #define ASM_PLBL_PRE "$ASM_PLBL"
 #define ASM_WEAK_DIRECTIVE "$ASM_WEAK_DIRECTIVE"
+#define AS_SUPPORTS_LOCAL_COMMON $AS_SUPPORTS_LOCAL_COMMON
 !
 
 	if ! which perl > /dev/null
@@ -109,7 +112,7 @@ try_set(){
 	shift
 	for ent in $@
 	do
-		if test -f "$ent"
+		if test -e "$ent"
 		then eval "$var=\"\$$var:$ent\""
 		fi
 	done
@@ -130,7 +133,7 @@ unam="$(uname -s)"
 
 # setup include paths
 # TODO: option to use local ./lib path
-UCC_INC="-I/usr/include"
+UCC_INC="/usr/include"
 
 # defaults for an OS
 case "$unam" in
@@ -165,7 +168,8 @@ case "$unam" in
 		UCC_CFLAGS='-mpreferred-stack-boundary=4' # 2^4 = 16 byte aligned
 		UCC_STDLIB='-lSystem'
 		UCC_CRT='-lcrt1.o'
-		UCC_LDFLAGS='-macosx_version_min 10.5'
+		syslibroot=$(ls -d /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX*.sdk | head -1)
+		UCC_LDFLAGS="-macosx_version_min 10.5 -syslibroot $syslibroot"
 		ASM_PLBL=L
 		NEED_DSYM=1
 		leading_underscore
@@ -205,7 +209,7 @@ do
 			fi
 			;;
 		--with-ucc-lib)
-			UCC_INC="-Ilib/"
+			UCC_INC="lib/"
 			UCC_CRT="lib/crt.a"
 			UCC_STDLIB="lib/libc.a"
 			UCC_DYN=''

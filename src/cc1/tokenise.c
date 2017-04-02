@@ -5,6 +5,7 @@
 #include <ctype.h>
 #include <stdarg.h>
 #include <limits.h>
+#include <assert.h>
 
 #include "../util/util.h"
 #include "tokenise.h"
@@ -31,7 +32,7 @@
 	KEYWORD(mode, x),           \
 	KEYWORD__(x, token_ ## x)
 
-struct keyword
+static const struct keyword
 {
 	const char *str;
 	enum token tok;
@@ -101,6 +102,8 @@ struct keyword
 
 	KEYWORD(KW_ALL, __extension__),
 	KEYWORD__(attribute, token_attribute),
+
+	KEYWORD(KW_ALL, __label__),
 
 	{ NULL, 0, 0 },
 };
@@ -241,11 +244,15 @@ static void parse_line_directive(char *l)
 		l += 4;
 
 	lno = strtol(l, &ep, 0);
-	if(ep == l)
-		die("couldn't parse number for #line directive (%s)", ep);
+	if(ep == l){
+		warn_at(NULL, "couldn't parse number for #line directive (%s)", ep);
+		return;
+	}
 
-	if(lno < 0)
-		die("negative #line directive argument");
+	if(lno < 0){
+		warn_at(NULL, "negative #line directive argument");
+		return;
+	}
 
 	loc_now.line = lno - 1; /* inc'd below */
 
@@ -255,8 +262,13 @@ static void parse_line_directive(char *l)
 		case '"':
 			{
 				char *p = str_quotefin(++ep);
-				if(!p)
-					die("no terminating quote to #line directive (%s)", l);
+				if(!p){
+					warn_at(NULL,
+							"no terminating quote to #line directive (%s)",
+							l);
+					return;
+				}
+
 				handle_line_file_directive(ustrdup2(ep, p), lno);
 				/*l = str_spc_skip(p + 1);
 					if(*l)
@@ -268,7 +280,9 @@ static void parse_line_directive(char *l)
 			break;
 
 		default:
-			die("expected '\"' or nothing after #line directive (%s)", ep);
+			warn_at(NULL,
+					"expected '\"' or nothing after #line directive (%s)",
+					ep);
 	}
 }
 
@@ -338,6 +352,12 @@ static void tokenise_next_line()
 	}
 
 	bufferpos = buffer = new;
+}
+
+static void update_bufferpos(char *new)
+{
+	loc_now.chr += new - bufferpos;
+	bufferpos = new;
 }
 
 void tokenise_set_input(tokenise_line_f *func, const char *nam)
@@ -453,7 +473,18 @@ static int peeknextchar()
 	return *bufferpos;
 }
 
-static void read_number(const enum base mode)
+static void skip_to_end_of_num(void)
+{
+	char *p;
+
+	for(p = bufferpos;
+			isalnum(*p) || *p == '.';
+			p++);
+
+	update_bufferpos(p);
+}
+
+static void read_integer(const enum base mode)
 {
 	char *end;
 	int of; /*verflow*/
@@ -477,48 +508,121 @@ static void read_number(const enum base mode)
 		die_at(NULL, "%s-number expected (got '%c')",
 				base_to_str(mode), peeknextchar());
 
-	/* -1, since we've already eaten the first numeric char */
-	loc_now.chr += end - bufferpos - 1;
-	bufferpos = end;
+	update_bufferpos(end);
+}
 
+static void read_suffix_float_exp(void)
+{
+	numeric mantissa;
+	int powmul;
+	int just_read = nextchar();
+
+	assert(just_read == 'e');
+
+	if(!(currentval.suffix & VAL_FLOATING)){
+		currentval.suffix = VAL_DOUBLE; /* 1e2 is double by default */
+		currentval.val.f = currentval.val.i;
+	}
+	mantissa = currentval;
+
+	powmul = (peeknextchar() == '-' ? -1 : 1);
+	if(powmul == -1)
+		nextchar();
+
+	if(!isdigit(peeknextchar())){
+		warn_at_print_error(NULL, "no digits in exponent");
+		parse_had_error = 1;
+		skip_to_end_of_num();
+		return;
+	}
+	read_integer(DEC); /* can't have fractional powers */
+
+	mantissa.val.f *= pow(10, powmul * (sintegral_t)currentval.val.i);
+
+	currentval = mantissa;
+}
+
+static void read_suffix_float(void)
+{
+	if(tolower(peeknextchar()) == 'e'){
+		read_suffix_float_exp();
+	}
+
+	if(tolower(peeknextchar()) == 'f'){
+		currentval.suffix = VAL_FLOAT;
+		nextchar();
+	}else if(tolower(peeknextchar()) == 'l'){
+		currentval.suffix = VAL_LDOUBLE;
+		nextchar();
+	}else{
+		currentval.suffix = VAL_DOUBLE;
+	}
+
+	currentval.suffix &= VAL_FLOATING;
+}
+
+static void read_suffix_int(void)
+{
 	/* accept either 'U' 'L' or 'LL' as atomic parts (i.e. not LUL) */
 	/* fine using nextchar() since we peeknextchar() first */
-	{
-		enum numeric_suffix suff = 0;
-		char c;
+	enum numeric_suffix suff = 0;
+	char c;
 
-		for(;;) switch((c = peeknextchar())){
-			case 'U':
-			case 'u':
-				if(suff & VAL_UNSIGNED)
-					die_at(NULL, "duplicate U suffix");
-				suff |= VAL_UNSIGNED;
-				nextchar();
-				break;
-			case 'L':
-			case 'l':
-				if(suff & (VAL_LLONG | VAL_LONG))
-					die_at(NULL, "already have a L/LL suffix");
+	for(;;) switch((c = peeknextchar())){
+		case 'U':
+		case 'u':
+			if(suff & VAL_UNSIGNED)
+				die_at(NULL, "duplicate U suffix");
+			suff |= VAL_UNSIGNED;
+			nextchar();
+			break;
+		case 'L':
+		case 'l':
+			if(suff & (VAL_LLONG | VAL_LONG))
+				die_at(NULL, "already have a L/LL suffix");
 
+			nextchar();
+			if(peeknextchar() == c){
+				C99_LONGLONG();
+				suff |= VAL_LLONG;
 				nextchar();
-				if(peeknextchar() == c){
-					C99_LONGLONG();
-					suff |= VAL_LLONG;
-					nextchar();
-				}else{
-					suff |= VAL_LONG;
-				}
-				break;
-			default:
-				goto out;
-		}
+			}else{
+				suff |= VAL_LONG;
+			}
+			break;
+		default:
+			goto out;
+	}
 
 out:
-		/* don't touch cv.suffix until after
-		 * - it may already have ULL from an
-		 * overflow in parsing
-		 */
-		currentval.suffix |= suff;
+	/* don't touch cv.suffix until after
+	 * - it may already have ULL from an
+	 * overflow in parsing
+	 */
+	currentval.suffix |= suff;
+}
+
+static void read_suffix(void)
+{
+	const int fp = (currentval.suffix & VAL_FLOATING
+			|| tolower(peeknextchar()) == 'e');
+
+	/* handle floating XeY */
+	if(fp){
+		read_suffix_float();
+	}else{
+		read_suffix_int();
+	}
+
+
+	if(isalpha(peeknextchar()) || peeknextchar() == '.'){
+		warn_at_print_error(NULL,
+				"invalid suffix on %s constant (%c)",
+				fp ? "floating point" : "integer",
+				peeknextchar());
+
+		parse_had_error = 1;
+		skip_to_end_of_num();
 	}
 }
 
@@ -574,8 +678,7 @@ static void read_string(char **sptr, size_t *plen)
 
 	escape_string(*sptr, plen);
 
-	bufferpos += size;
-	loc_now.chr += size;
+	update_bufferpos(bufferpos + size);
 }
 
 static void ungetchar(char ch)
@@ -640,18 +743,119 @@ static void read_string_multiple(const int is_wide)
 static void cc1_read_quoted_char(const int is_wide)
 {
 	int multichar;
-	long ch = read_quoted_char(bufferpos, &bufferpos, &multichar);
+	char *p;
+	long ch = read_quoted_char(bufferpos, &p, &multichar, /*256*/!is_wide);
 
 	if(multichar){
 		if(ch & (~0UL << (CHAR_BIT * type_primitive_size(type_int))))
-			warn_at(NULL, "multi-char constant too large");
+			cc1_warn_at(NULL, multichar_toolarge, "multi-char constant too large");
 		else
-			warn_at(NULL, "multi-char constant");
+			cc1_warn_at(NULL, multichar, "multi-char constant");
 	}
 
 	currentval.val.i = ch;
 	currentval.suffix = 0;
 	curtok = is_wide ? token_integer : token_character;
+
+	update_bufferpos(p);
+}
+
+static void read_number(const int first)
+{
+	char *const num_start = bufferpos - 1;
+	char *p;
+	enum base mode;
+	int just_zero = 0;
+
+	if(first == '0'){
+		int next = *bufferpos;
+
+		switch(tolower(next)){
+			case 'x':
+				mode = HEX;
+				update_bufferpos(bufferpos + 1);
+				break;
+			case 'b':
+				cc1_warn_at(NULL, binary_literal, "binary literals are an extension");
+				mode = BIN;
+				update_bufferpos(bufferpos + 1);
+				break;
+
+			default:
+				mode = OCT;
+
+				if(isoct(next)){
+					/* fine */
+				}else if(isdigit(next)){
+					die_at(NULL, "invalid oct character '%c'", next);
+				}else{
+					/* just zero */
+					update_bufferpos(num_start);
+					just_zero = 1;
+				}
+				break;
+		}
+	}else{
+		mode = DEC;
+		update_bufferpos(num_start);
+	}
+
+	/* check for '.' after prefix handling:
+	 * may be a hex-float constant */
+	for(p = bufferpos; (mode == HEX ? isxdigit : isdigit)(*p); p++);
+
+	if(*p == '.' || (mode == HEX && *p == 'p')){
+		char *new;
+		int bad_prefix = 0;
+
+		currentval.val.f = strtold(num_start, &new);
+		currentval.suffix = VAL_FLOATING;
+		update_bufferpos(new);
+
+		switch(mode){
+			case DEC:
+				break;
+
+			case HEX:
+				/* check for exponent */
+				assert(!strncmp(num_start, "0x", 2));
+				for(p = num_start + 2; isxdigit(*p) || *p == '.'; p++);
+
+				if(tolower(*p) != 'p'){
+					warn_at_print_error(NULL, "floating literal requires exponent");
+					parse_had_error = 1;
+					skip_to_end_of_num();
+				}
+				break;
+
+			case OCT:
+				if(!just_zero)
+					bad_prefix = 1;
+				break;
+			case BIN:
+				bad_prefix = 1;
+				break;
+		}
+
+		if(bad_prefix){
+			warn_at_print_error(NULL, "invalid prefix on floating literal");
+			parse_had_error = 1;
+			skip_to_end_of_num();
+		}
+
+	}else{
+		if(just_zero){
+			update_bufferpos(p);
+			currentval.val.i = 0;
+			currentval.suffix = VAL_OCTAL;
+		}else{
+			read_integer(mode);
+		}
+	}
+
+	read_suffix();
+
+	curtok = (currentval.suffix & VAL_FLOATING ? token_floater : token_integer);
 }
 
 void nexttoken()
@@ -677,81 +881,7 @@ void nexttoken()
 	}
 
 	if(isdigit(c) || (c == '.' && isdigit(peeknextchar()))){
-		char *const num_start = bufferpos - 1;
-		enum base mode;
-
-		if(c == '0'){
-			/* note the '0' */
-			loc_now.chr++;
-
-			switch(tolower(c = peeknextchar())){
-				case 'x':
-					mode = HEX;
-					nextchar();
-					break;
-				case 'b':
-					mode = BIN;
-					nextchar();
-					break;
-				default:
-					if(!isoct(c)){
-						if(isdigit(c))
-							die_at(NULL, "invalid oct character '%c'", c);
-						else
-							mode = DEC; /* just zero */
-
-						bufferpos--; /* have the zero */
-						loc_now.chr--;
-					}else{
-						mode = OCT;
-					}
-					break;
-			}
-		}else{
-			mode = DEC;
-			bufferpos--; /* rewind */
-		}
-
-		if(c != '.')
-			read_number(mode);
-
-#if 0
-		if(tolower(peeknextchar()) == 'e'){
-			/* 5e2 */
-			int n = currentval.val;
-
-			if(!isdigit(peeknextchar())){
-				curtok = token_unknown;
-				return;
-			}
-			read_number();
-
-			currentval.val = n * pow(10, currentval.val);
-			/* cv = n * 10 ^ cv */
-		}
-#endif
-
-		if(c == '.' || peeknextchar() == '.'){
-			/* floating point */
-
-			currentval.val.f = strtold(num_start, &bufferpos);
-
-			if(toupper(peeknextchar()) == 'F'){
-				currentval.suffix = VAL_FLOAT;
-				nextchar();
-			}else if(toupper(peeknextchar()) == 'L'){
-				currentval.suffix = VAL_LDOUBLE;
-				nextchar();
-			}else{
-				currentval.suffix = VAL_DOUBLE;
-			}
-
-			curtok = token_floater;
-
-		}else{
-			curtok = token_integer;
-		}
-
+		read_number(c);
 		return;
 	}
 
@@ -785,7 +915,7 @@ void nexttoken()
 	if(isalpha(c) || c == '_' || c == '$'){
 		unsigned int len = 1;
 		char *const start = bufferpos - 1; /* regrab the char we switched on */
-		struct keyword *k;
+		const struct keyword *k;
 
 		do{ /* allow numbers */
 			c = peeknextchar();

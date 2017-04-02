@@ -1,10 +1,14 @@
 #ifndef MAIN_H
 #define MAIN_H
 
+#include "../util/std.h"
+
 void dirname_push(char *d);
 char *dirname_pop(void);
 
 extern char **cd_stack;
+
+extern enum c_std cpp_std;
 
 extern char cpp_time[16], cpp_date[16], cpp_timestamp[64];
 
@@ -24,7 +28,6 @@ extern struct loc loc_tok;
   do{                          \
     if(wm == 0 || wm & wmode){ \
       current_line--;          \
-      preproc_backtrace();     \
       f(NULL, __VA_ARGS__);    \
       current_line++;          \
     }                          \
@@ -35,6 +38,8 @@ extern struct loc loc_tok;
 
 void debug_push_line(char *);
 void debug_pop_line(void);
+
+void trace(const char *, ...);
 
 extern enum wmode
 {
@@ -51,6 +56,9 @@ extern enum wmode
 	WFINALESCAPE = 1 << 10, /* backslash-esc at eof */
 	WMULTICHAR   = 1 << 11, /* duh */
 	WQUOTE       = 1 << 12, /* dodgy quoting */
+	WHASHWARNING = 1 << 13, /* #warning */
+	WBACKSLASH_SPACE_NEWLINE = 1 << 14,
+	WNEWLINE     = 1 << 15,
 } wmode;
 
 extern enum comment_strip

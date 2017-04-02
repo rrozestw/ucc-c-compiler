@@ -42,11 +42,12 @@ static void parse_test_init_expr(stmt *t, struct stmt_ctx *ctx)
 	 *
 	 * C90 drags the scope of the enum up to the enclosing block
 	 */
-	if(cc1_std >= STD_C99){
-		ctx->scope = t->symtab = symtab_new(t->symtab, &here);
-	}
+	t->symtab = (cc1_std >= STD_C99 ? symtab_new : symtab_new_transparent)(
+				t->symtab, &here);
 
-  if(parse_at_decl(ctx->scope)){
+	ctx->scope = t->symtab;
+
+  if(parse_at_decl(ctx->scope, 1)){
 		decl *d;
 
 		/* if we are at a type, push a scope for it, for
@@ -58,8 +59,7 @@ static void parse_test_init_expr(stmt *t, struct stmt_ctx *ctx)
 
 		d = parse_decl(
 				DECL_SPEL_NEED, 0,
-				init_scope, init_scope,
-				&t->flow->init_blk);
+				init_scope, init_scope);
 
 		UCC_ASSERT(d, "at decl, but no decl?");
 
@@ -178,16 +178,19 @@ static stmt *parse_for(const struct stmt_ctx *const ctx)
 
 	if(!accept(token_semicolon)){
 		int got_decls;
+		where w;
+
+		where_cc1_current(&w);
 
 		got_decls = parse_decl_group(
 				DECL_MULTI_ALLOW_ALIGNAS | DECL_MULTI_ALLOW_STORE,
 				/*newdecl context:*/1,
 				subctx.scope, subctx.scope,
-				NULL, /*pinit_code:*/&sf->init_blk);
+				NULL);
 
 		if(got_decls){
 			if(cc1_std < STD_C99)
-				warn_at(NULL, "use of C99 for-init");
+				cc1_warn_at(&w, c89_for_init, "use of C99 for-init");
 
 			stmt_for_got_decls(s);
 		}else{
@@ -280,13 +283,40 @@ static stmt *parse_label(const struct stmt_ctx *ctx)
 		if(ai->type == attr_unused)
 			lblstmt->bits.lbl.unused = 1;
 		else
-			warn_at(&ai->where,
+			cc1_warn_at(&ai->where,
+					lbl_attr_unknown,
 					"ignoring attribute \"%s\" on label",
 					attribute_to_str(ai));
 
 	attribute_free(attr);
 
 	return parse_label_next(lblstmt, ctx);
+}
+
+static void parse_local_labels(const struct stmt_ctx *const ctx)
+{
+	while(accept(token___label__)){
+		for(;;){
+			char *spel = token_current_spel();
+			where loc;
+			int created;
+
+			where_cc1_current(&loc);
+			EAT(token_identifier);
+
+			created = symtab_label_add_local(ctx->scope, spel, &loc); 
+
+			if(!created){
+				warn_at_print_error(&loc, "local label \"%s\" already defined", spel);
+				fold_had_error = 1;
+				free(spel);
+			}
+
+			if(accept(token_semicolon))
+				break;
+			EAT(token_comma);
+		}
+	}
 }
 
 static stmt *parse_stmt_and_decls(
@@ -301,27 +331,22 @@ static stmt *parse_stmt_and_decls(
 
 	subctx.scope = code_stmt->symtab;
 
+	parse_local_labels(&subctx);
+
 	parse_static_assert(subctx.scope);
 
 	while(1){
-		stmt *init_blk = NULL;
-
 		int new_group = parse_decl_group(
 				DECL_MULTI_ACCEPT_FUNC_DECL
 				| DECL_MULTI_ALLOW_STORE
 				| DECL_MULTI_ALLOW_ALIGNAS,
 				/*newdecl_context:*/1,
 				subctx.scope,
-				subctx.scope, NULL,
-				&init_blk);
+				subctx.scope, NULL);
 
 		if(new_group){
 			got_decls = 1;
-
-			if(init_blk)
-				dynarray_add(&code_stmt->bits.code.stmts, init_blk);
 		}else{
-			UCC_ASSERT(!init_blk, "inits but no decls?");
 			break;
 		}
 	}
@@ -354,7 +379,7 @@ static stmt *parse_stmt_and_decls(
 				this = parse_label(&subctx);
 			else if(curtok == token_close_block)
 				break;
-			else if((at_decl = parse_at_decl(subctx.scope)))
+			else if((at_decl = parse_at_decl(subctx.scope, 1)))
 				break;
 			else
 				this = parse_stmt(&subctx);
@@ -370,7 +395,7 @@ static stmt *parse_stmt_and_decls(
 					static int warned = 0;
 					if(!warned){
 						warned = 1;
-						cc1_warn_at(&nest->where, 0, WARN_MIXED_CODE_DECLS,
+						cc1_warn_at(&nest->where, mixed_code_decls,
 								"mixed code and declarations");
 					}
 				}
@@ -548,12 +573,12 @@ flow:
 			where_cc1_current(&cse_loc);
 
 			EAT(token_case);
-			a = parse_expr_exp(ctx->scope, 0);
+			a = PARSE_EXPR_CONSTANT(ctx->scope, 0);
 			if(accept(token_elipsis)){
 				t = stmt_new_wrapper(case_range, ctx->scope);
 				t->parent = ctx->switch_target;
 				t->expr  = a;
-				t->expr2 = parse_expr_exp(ctx->scope, 0);
+				t->expr2 = PARSE_EXPR_CONSTANT(ctx->scope, 0);
 			}else{
 				t = stmt_new_wrapper(case, ctx->scope);
 				t->expr = a;
@@ -582,6 +607,8 @@ flow:
 symtable_gasm *parse_gasm(void)
 {
 	symtable_gasm *g = umalloc(sizeof *g);
+
+	where_cc1_current(&g->where);
 
 	EAT(token_open_paren);
 	token_get_current_str(&g->asm_str, NULL, NULL, NULL);

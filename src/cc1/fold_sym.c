@@ -7,7 +7,6 @@
 #include "../util/alloc.h"
 #include "../util/dynarray.h"
 #include "../util/dynmap.h"
-#include "../util/platform.h"
 
 #include "cc1.h"
 #include "sym.h"
@@ -21,6 +20,7 @@
 #include "const.h"
 #include "label.h"
 #include "type_is.h"
+#include "vla.h"
 
 
 #define RW_TEST(decl, var)                      \
@@ -33,8 +33,8 @@
             && !type_is_s_or_u(decl->ref)
 
 #define RW_SHOW(decl, w, str)          \
-          cc1_warn_at(&decl->where, 0, \
-              WARN_SYM_NEVER_ ## w,    \
+          cc1_warn_at(&decl->where, \
+              sym_never_ ## w,    \
               "\"%s\" never " str,     \
               decl->spel);             \
 
@@ -46,36 +46,32 @@
               }                       \
             }while(0)
 
-/*#define SYMTAB_DEBUG*/
-#ifdef SYMTAB_DEBUG
-static void print_stab(symtable *st, int indent)
+static void dump_symtab(symtable *st, unsigned indent)
 {
-#define STAB_INDENT() for(i = 0; i < indent; i++) fputs("  ", stderr)
-	int i;
+	symtable **si;
+	decl **di;
+	unsigned i;
 
+#define STAB_INDENT() for(i = 0; i < indent; i++) fputs("  ", stderr)
 	STAB_INDENT();
 
-	fprintf(stderr, "table %p, children %d, vars %d, are_params %d, parent: %p\n",
+	fprintf(stderr, "symtab %p = { .are_params=%d, .in_func=%s }\n",
 			(void *)st,
-			dynarray_count(st->children),
-			dynarray_count(st->decls),
 			st->are_params,
-			(void *)st->parent);
+			st->in_func ? st->in_func->spel : "<none>");
 
-	decl **di;
 	for(di = st->decls; di && *di; di++){
 		decl *d = *di;
 		STAB_INDENT();
-		fprintf(stderr, "  (%s, %s)\n",
-				d->sym ? sym_to_str(d->sym->type) : NULL,
-				decl_to_str(d));
+		fprintf(stderr, "  %s, %s\n",
+				d->sym ? sym_to_str(d->sym->type) : "<nosym>",
+				d->spel);
 	}
 
-	symtable **si;
 	for(si = st->children; si && *si; si++)
-		print_stab(*si, indent + 1);
+		dump_symtab(*si, indent + 1);
+#undef STAB_INDENT
 }
-#endif
 
 static void symtab_iter_children(symtable *stab, void f(symtable *))
 {
@@ -100,17 +96,23 @@ void symtab_check_static_asserts(symtable *stab)
 		sa->checked = 1;
 
 		FOLD_EXPR(sa->e, sa->scope);
-		if(!type_is_integral(sa->e->tree_type))
-			die_at(&sa->e->where,
+		if(!type_is_integral(sa->e->tree_type)){
+			warn_at_print_error(&sa->e->where,
 					"static assert: not an integral expression (%s)",
 					sa->e->f_str());
+			fold_had_error = 1;
+			continue;
+		}
 
 		const_fold(sa->e, &k);
 
-		if(k.type != CONST_NUM || !K_INTEGRAL(k.bits.num))
-			die_at(&sa->e->where,
+		if(k.type != CONST_NUM || !K_INTEGRAL(k.bits.num)){
+			warn_at_print_error(&sa->e->where,
 					"static assert: not an integer constant expression (%s)",
 					sa->e->f_str());
+			fold_had_error = 1;
+			continue;
+		}
 
 		if(!k.bits.num.val.i){
 			warn_at_print_error(&sa->e->where, "static assertion failure: %s", sa->s);
@@ -129,7 +131,7 @@ void symtab_check_rw(symtable *tab)
 
 	symtab_iter_children(tab, symtab_check_rw);
 
-	for(diter = tab->decls; diter && *diter; diter++){
+	for(diter = symtab_decls(tab); diter && *diter; diter++){
 		decl *const d = *diter;
 
 		if(d->sym) switch(d->sym->type){
@@ -150,8 +152,12 @@ void symtab_check_rw(symtable *tab)
 						case store_auto:
 						case store_static:
 							/* static analysis on sym */
-							if(!has_unused_attr && !type_is(d->ref, type_func) && !d->bits.var.init)
-								RW_WARN(WRITTEN, d, nwrites, "written to");
+							if(!has_unused_attr
+							&& !type_is(d->ref, type_func)
+							&& !d->bits.var.init.dinit)
+							{
+								RW_WARN(written, d, nwrites, "written to");
+							}
 							break;
 						case store_extern:
 						case store_typedef:
@@ -162,9 +168,10 @@ void symtab_check_rw(symtable *tab)
 
 				if(unused){
 					if(!has_unused_attr && (d->store & STORE_MASK_STORE) != store_extern)
-						RW_SHOW(d, READ, "read");
+						RW_SHOW(d, read, "read");
 				}else if(has_unused_attr){
-					warn_at(&d->where,
+					cc1_warn_at(&d->where,
+							attr_unused_used,
 							"\"%s\" declared unused, but is used", d->spel);
 				}
 			}
@@ -234,7 +241,8 @@ static void warn_c11_retypedef(decl *a, decl *b)
 	if(cc1_std < STD_C11){
 		char buf[WHERE_BUF_SIZ];
 
-		warn_at(&b->where,
+		cc1_warn_at(&b->where,
+				typedef_redef,
 				"typedef '%s' redefinition is a C11 extension\n"
 				"%s: note: other definition here",
 				a->spel, where_str_r(buf, &a->where));
@@ -262,10 +270,8 @@ void symtab_fold_decls(symtable *tab)
 		  all_idents[nidents-1].bits.decl = d;  \
 		}while(0)
 
-#ifdef SYMTAB_DEBUG
-	if(!tab->parent)
-		print_stab(tab, 0);
-#endif
+	if(fopt_mode & FOPT_DUMP_SYMTAB && !tab->parent)
+		dump_symtab(tab, 0);
 
 	symtab_iter_children(tab, symtab_fold_decls);
 
@@ -273,10 +279,10 @@ void symtab_fold_decls(symtable *tab)
 		return;
 	tab->folded = 1;
 
-	for(diter = tab->decls; diter && *diter; diter++){
+	for(diter = symtab_decls(tab); diter && *diter; diter++){
 		decl *d = *diter;
 
-		fold_decl(d, tab, NULL);
+		fold_decl(d, tab);
 
 		if(d->spel)
 			NEW_DECL(d);
@@ -298,13 +304,20 @@ void symtab_fold_decls(symtable *tab)
 			}
 		}
 
-		if(type_is_func_or_block(d->ref)
-		&& d->store & store_inline
-		&& (d->store & STORE_MASK_STORE) == store_default)
-		{
-			warn_at(&d->where,
+		if(type_is_func_or_block(d->ref) && decl_is_pure_inline(d)){
+			cc1_warn_at(&d->where,
+					pure_inline,
 					"pure inline function will not have code emitted "
 					"(missing \"static\" or \"extern\")");
+		}
+
+		/* direct check for static - only warn on the one instance */
+		if((d->store & STORE_MASK_STORE) == store_static
+		&& type_is(d->ref, type_func)
+		&& !decl_impl(d)->bits.func.code)
+		{
+			cc1_warn_at(&d->where, undef_internal,
+					"function declared static but not defined");
 		}
 	}
 
@@ -335,7 +348,7 @@ void symtab_fold_decls(symtable *tab)
 	 *                      ^ don't want to import the parent 'a' here
 	 */
 	if(tab->parent && tab->parent->are_params && tab->parent->in_func)
-		for(diter = tab->parent->decls; diter && *diter; diter++)
+		for(diter = symtab_decls(tab->parent); diter && *diter; diter++)
 			NEW_DECL(*diter);
 
 	if(nidents > 1){
@@ -377,10 +390,16 @@ void symtab_fold_decls(symtable *tab)
 						decl *db = b->bits.decl;
 
 						const int a_func = !!type_is(da->ref, type_func);
+						const int a_tdef = (da->store & STORE_MASK_STORE) == store_typedef;
+						const int b_tdef = (db->store & STORE_MASK_STORE) == store_typedef;
 
-						if(!!type_is(db->ref, type_func) != a_func){
+						if(a_tdef != b_tdef){
 							clash = "mismatching";
-						}else switch(decl_cmp(da, db, TYPE_CMP_ALLOW_TENATIVE_ARRAY)){
+						}else if(!!type_is(db->ref, type_func) != a_func){
+							clash = "mismatching";
+						}else switch(type_cmp(da->ref, db->ref, TYPE_CMP_ALLOW_TENATIVE_ARRAY)){
+							/* ^ type_cmp, since decl_cmp checks storage,
+							 * but we handle that during parse */
 							case TYPE_NOT_EQUAL:
 							case TYPE_QUAL_ADD:
 							case TYPE_QUAL_SUB:
@@ -388,24 +407,10 @@ void symtab_fold_decls(symtable *tab)
 							case TYPE_QUAL_POINTED_SUB:
 							case TYPE_QUAL_NESTED_CHANGE:
 							case TYPE_CONVERTIBLE_EXPLICIT:
+							case TYPE_CONVERTIBLE_IMPLICIT:
 								/* must be an exact match */
 								clash = "mismatching";
 								break;
-							case TYPE_CONVERTIBLE_IMPLICIT:
-								if(a_func){
-									/* allow 'a' to be static and 'b' to not be */
-									if((da->store & STORE_MASK_STORE) == store_static
-									&& (db->store & STORE_MASK_STORE) != store_static)
-									{
-										/* fine */
-									}else{
-										clash = "mismatching";
-									}
-								}else{
-									clash = "mismatching";
-								}
-								break;
-
 							case TYPE_EQUAL_TYPEDEF:
 							case TYPE_EQUAL:
 								if(IS_LOCAL_SCOPE){
@@ -435,15 +440,10 @@ void symtab_fold_decls(symtable *tab)
 											clash = "duplicate";
 										}
 									}else{
-										/* variables at global scope - check static redef */
-										if(((da->store & STORE_MASK_STORE) == store_static)
-										 !=((db->store & STORE_MASK_STORE) == store_static))
-										{
-											clash = "mismatching";
-										}
+										/* variables at global scope - static checked in parse */
 									}
 
-									if(!clash && (da->store & STORE_MASK_STORE) == store_typedef){
+									if(!clash && STORE_IS_TYPEDEF(da->store)){
 										warn_c11_retypedef(da, db);
 									}
 								}
@@ -470,91 +470,6 @@ void symtab_fold_decls(symtable *tab)
 #undef IS_LOCAL_SCOPE
 }
 
-unsigned symtab_layout_decls(symtable *tab, unsigned current)
-{
-	const unsigned this_start = current;
-
-	if(tab->laidout)
-		goto out;
-	tab->laidout = 1;
-
-	if(tab->decls){
-		decl **diter;
-
-		for(diter = tab->decls; *diter; diter++){
-			decl *d = *diter;
-			sym *s = d->sym;
-
-			/* we might not have a symbol, e.g.
-			 * f(int (*pf)(int (*callme)()))
-			 *         ^         ^
-			 *         |         +-- nested - skipped
-			 *         +------------ `tab'
-			 */
-			if(!s)
-				continue;
-
-
-			switch(s->type){
-				case sym_arg:
-					break;
-
-				case sym_local: /* warn on unused args and locals */
-					if(type_is(d->ref, type_func))
-						continue;
-
-					switch((enum decl_storage)(d->store & STORE_MASK_STORE)){
-							/* for now, we allocate stack space for register vars */
-						case store_register:
-						case store_default:
-						case store_auto:
-						{
-							unsigned siz = decl_size(s->decl);
-							unsigned align = decl_align(s->decl);
-
-							/* align greater than size - we increase
-							 * size so it can be aligned to `align'
-							 */
-							if(align > siz)
-								siz = pack_to_align(siz, align);
-
-							/* packing takes care of everything */
-							pack_next(&current, NULL, siz, align);
-							s->loc.stack_pos = current;
-							break;
-						}
-
-						case store_static:
-						case store_extern:
-						case store_typedef:
-							break;
-						case store_inline:
-							ICE("%s store", decl_store_to_str(d->store));
-					}
-				case sym_global:
-					break;
-			}
-		}
-	}
-
-	{
-		symtable **tabi;
-		unsigned subtab_max = 0;
-
-		for(tabi = tab->children; tabi && *tabi; tabi++){
-			unsigned this = symtab_layout_decls(*tabi, current);
-			if(this > subtab_max)
-				subtab_max = this;
-		}
-
-		/* don't account the args in the space */
-		tab->auto_total_size = current - this_start + subtab_max;
-	}
-
-out:
-	return tab->auto_total_size;
-}
-
 void symtab_chk_labels(symtable *stab)
 {
 	symtab_iter_children(stab, symtab_chk_labels);
@@ -566,10 +481,21 @@ void symtab_chk_labels(symtable *stab)
 		for(i = 0;
 		    (l = dynmap_value(label *, stab->labels, i));
 		    i++)
-			if(!l->complete)
-				die_at(l->pw, "label '%s' undefined", l->spel);
-			else if(!l->uses && !l->unused)
-				warn_at(l->pw, "unused label '%s'", l->spel);
+		{
+			stmt **si;
+
+			if(!l->complete){
+				warn_at_print_error(&l->where, "label '%s' undefined", l->spel);
+				fold_had_error = 1;
+			}else if(!l->uses && !l->unused){
+				cc1_warn_at(&l->where, lbl_unused, "unused label '%s'", l->spel);
+			}
+
+			for(si = l->jumpers; si && *si; si++){
+				stmt *s = *si;
+				fold_check_scope_entry(&s->where, "goto enters", s->symtab, l->scope);
+			}
+		}
 	}
 }
 

@@ -9,6 +9,9 @@
 #include "../type_nav.h"
 #include "../type_is.h"
 #include "../sym.h"
+#include "../vla.h"
+
+#include "../cc1_out_ctx.h"
 
 #include "out.h" /* this file defs */
 #include "val.h"
@@ -19,14 +22,14 @@
 out_val *out_new_blk_addr(out_ctx *octx, out_blk *blk)
 {
 	type *voidp = type_ptr_to(type_nav_btype(cc1_type_nav, type_void));
-	dynarray_add(&octx->mustgen, blk);
+	out_blk_mustgen(octx, blk, 0);
 	return out_new_lbl(octx, voidp, blk->lbl, 1);
 }
 
 static out_val *out_new_bp_off(out_ctx *octx, long off)
 {
 	type *voidp = type_ptr_to(type_nav_btype(cc1_type_nav, type_void));
-	return v_new_bp3(octx, NULL, voidp, off);
+	return v_new_bp3_below(octx, NULL, voidp, off);
 }
 
 out_val *out_new_frame_ptr(out_ctx *octx, int nframes)
@@ -49,7 +52,7 @@ out_val *out_new_frame_ptr(out_ctx *octx, int nframes)
 
 out_val *out_new_reg_save_ptr(out_ctx *octx)
 {
-	return out_new_bp_off(octx, -octx->stack_variadic_offset);
+	return out_new_bp_off(octx, octx->stack_variadic_offset);
 }
 
 out_val *out_new_num(out_ctx *octx, type *ty, const numeric *n)
@@ -112,17 +115,32 @@ const out_val *out_new_overflow(out_ctx *octx, const out_val **eval)
 	return impl_test_overflow(octx, eval);
 }
 
-out_val *out_new_sym(out_ctx *octx, sym *sym)
+static const out_val *sym_inline_val(out_ctx *octx, sym *sym)
 {
+	struct cc1_out_ctx **cc1_octx = cc1_out_ctx(octx);
+
+	if(*cc1_octx){
+		dynmap *symmap = (*cc1_octx)->sym_inline_map;
+
+		const out_val *val = dynmap_get(
+				struct sym *, const out_val *, symmap, sym);
+
+		if(val)
+			return out_val_retain(octx, val);
+	}
+
+	return NULL;
+}
+
+const out_val *out_new_sym(out_ctx *octx, sym *sym)
+{
+	/* this function shouldn't be in out/ */
 	type *ty = type_ptr_to(sym->decl->ref);
 
 	switch(sym->type){
 		case sym_global:
 label:
 			return out_new_lbl(octx, ty, decl_asm_spel(sym->decl), 1);
-
-		case sym_arg:
-			return v_new_bp3(octx, NULL, ty, sym->loc.arg_offset);
 
 		case sym_local:
 		{
@@ -136,26 +154,44 @@ label:
 				assert(0);
 			}
 
-			/* sym offsetting takes into account the stack growth direction */
-			return v_new_bp3(octx, NULL, ty,
-					-(long)(sym->loc.stack_pos + octx->stack_local_offset));
+			if(type_is_vla(d->ref, VLA_ANY_DIMENSION))
+				return vla_address(d, octx);
+
+			/* fallthru */
+		}
+
+		case sym_arg:
+		{
+			const out_val *v = sym_outval(sym);
+			assert(v && "no value for argument");
+			octx->used_stack = 1;
+			return out_val_retain(octx, v);
 		}
 	}
 
 	assert(0);
 }
 
-out_val *out_new_sym_val(out_ctx *octx, sym *sym)
+const out_val *out_new_sym_val(out_ctx *octx, sym *sym)
 {
-	return (out_val *)out_deref(octx, out_new_sym(octx, sym));
+	if(sym->type == sym_arg){
+		/* if an argument is only ever used in rvalue context,
+		 * then as an optimisation we don't read from an lvalue
+		 * and use that - we inline the rvalue directly */
+		const out_val *inlined = sym_inline_val(octx, sym);
+		if(inlined)
+			return inlined;
+	}
+
+	return out_deref(octx, out_new_sym(octx, sym));
 }
 
 out_val *out_new_zero(out_ctx *octx, type *ty)
 {
-	numeric n;
+	numeric n = { 0 };
 
-	n.val.f = 0;
-	n.suffix = VAL_FLOATING; /* sufficient for V_CONST_F */
+	if(type_is_floating(ty))
+		n.suffix = VAL_FLOATING; /* sufficient for V_CONST_F */
 
 	return out_new_num(octx, ty, &n);
 }

@@ -6,7 +6,7 @@
 
 const char *str_stmt_case_range()
 {
-	return "case_range";
+	return "case-range";
 }
 
 void fold_stmt_case_range(stmt *s)
@@ -29,16 +29,32 @@ void fold_stmt_case_range(stmt *s)
 	if(lv >= rv)
 		die_at(&s->where, "case range equal or inverse");
 
+	cc1_warn_at(&s->where, gnu_case_range, "use of GNU case-range");
+
 	fold_stmt_and_add_to_curswitch(s);
 }
 
-void gen_stmt_case_range(stmt *s, out_ctx *octx)
+void gen_stmt_case_range(const stmt *s, out_ctx *octx)
 {
 	out_ctrl_transfer_make_current(octx, s->bits.case_blk);
 	gen_stmt(s->lhs, octx);
 }
 
-void style_stmt_case_range(stmt *s, out_ctx *octx)
+void dump_stmt_case_range(const stmt *s, dump *ctx)
+{
+	dump_desc_stmt(ctx, "case-range", s);
+
+	dump_inc(ctx);
+	dump_expr(s->expr, ctx);
+	dump_expr(s->expr2, ctx);
+	dump_dec(ctx);
+
+	dump_inc(ctx);
+	dump_stmt(s->lhs, ctx);
+	dump_dec(ctx);
+}
+
+void style_stmt_case_range(const stmt *s, out_ctx *octx)
 {
 	stylef("\ncase %ld ... %ld: ",
 			(long)const_fold_val_i(s->expr),

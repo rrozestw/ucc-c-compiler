@@ -68,9 +68,9 @@ void gen_style_decl(decl *d)
 		return;
 	}
 
-	if(d->bits.var.init){
+	if(d->bits.var.init.dinit){
 		stylef(" = ");
-		gen_style_dinit(d->bits.var.init);
+		gen_style_dinit(d->bits.var.init.dinit);
 	}
 	stylef(";\n");
 }
@@ -79,6 +79,6 @@ void gen_style(symtable_global *stab)
 {
 	decl **i;
 
-	for(i = stab->stab.decls; i && *i; i++)
+	for(i = symtab_decls(&stab->stab); i && *i; i++)
 		gen_style_decl(*i);
 }

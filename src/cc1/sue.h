@@ -75,7 +75,8 @@ struct_union_enum_st *sue_find_this_scope(
 struct_union_enum_st *sue_decl(
 		struct symtable *stab, char *spel,
 		sue_member **members, enum type_primitive prim,
-		int got_membs, int is_declaration);
+		int got_membs, int is_declaration, int pre_parse,
+		where *);
 
 sue_member *sue_drop(struct_union_enum_st *sue, sue_member **pos);
 
@@ -88,12 +89,23 @@ int  enum_nentries(struct_union_enum_st *);
 void enum_member_search(enum_member **, struct_union_enum_st **,
 		struct symtable *, const char *spel);
 
-/* struct/union specific */
-unsigned sue_size(struct_union_enum_st *, where *w);
-unsigned sue_align(struct_union_enum_st *, where *w);
-int sue_enum_size(struct_union_enum_st *st);
+#ifdef NUM_H
+int enum_has_value(struct_union_enum_st *, integral_t);
+#endif
 
-void sue_incomplete_chk(struct_union_enum_st *st, where *w);
+/* struct/union specific */
+unsigned sue_size(struct_union_enum_st *, const where *w);
+unsigned sue_align(struct_union_enum_st *, const where *w);
+
+enum sue_szkind
+{
+	SUE_NORMAL,
+	SUE_EMPTY,
+	SUE_NONAMED
+};
+enum sue_szkind sue_sizekind(struct_union_enum_st *);
+
+void sue_incomplete_chk(struct_union_enum_st *st, const where *w);
 
 struct decl *struct_union_member_find(struct_union_enum_st *,
 		const char *spel, unsigned *extra_off,

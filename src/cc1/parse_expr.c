@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <string.h>
+#include <assert.h>
 
 #include "../util/util.h"
 #include "../util/alloc.h"
@@ -9,6 +11,7 @@
 #include "parse_expr.h"
 #include "parse_stmt.h"
 #include "cc1_where.h"
+#include "warn.h"
 
 #include "tokenise.h"
 #include "tokconv.h"
@@ -25,15 +28,30 @@
 expr *parse_expr_unary(symtable *scope, int static_ctx);
 #define PARSE_EXPR_CAST(s, static_ctx) parse_expr_unary(s, static_ctx)
 
-expr *parse_expr_sizeof_typeof_alignof(
-		enum what_of what_of, symtable *scope)
+expr *parse_expr_sizeof_typeof_alignof(symtable *scope)
 {
 	const int static_ctx = /*doesn't matter:*/0;
 	expr *e;
 	where w;
+	int is_expr = 1;
+	enum what_of what_of;
 
 	where_cc1_current(&w);
-	w.chr -= what_of == what_alignof ? 7 : 6; /* go back over the *of */
+
+	switch(curtok){
+		default:
+			assert(0 && "unreachable sizeof parse");
+
+		case token__Alignof:
+			what_of = what_alignof;
+			if(0)
+		case token_typeof:
+			what_of = what_typeof;
+			if(0)
+		case token_sizeof:
+			what_of = what_sizeof;
+	}
+	EAT(curtok);
 
 	if(accept(token_open_paren)){
 		type *r = parse_type(0, scope);
@@ -42,15 +60,17 @@ expr *parse_expr_sizeof_typeof_alignof(
 			EAT(token_close_paren);
 
 			/* check for sizeof(int){...} */
-			if(curtok == token_open_block)
+			if(curtok == token_open_block){
 				e = expr_new_sizeof_expr(
 							expr_new_compound_lit(
 								r,
 								parse_init(scope, static_ctx),
 								static_ctx),
 							what_of);
-			else
+			}else{
 				e = expr_new_sizeof_type(r, what_of);
+				is_expr = 0;
+			}
 
 		}else{
 			/* not a type - treat the open paren as part of the expression */
@@ -69,7 +89,14 @@ expr *parse_expr_sizeof_typeof_alignof(
 		/* don't go any higher, sizeof a - 1, means sizeof(a) - 1 */
 	}
 
-	return expr_set_where_len(e, &w);
+	e = expr_set_where_len(e, &w);
+
+	if(what_of == what_alignof && is_expr){
+		cc1_warn_at(&e->where, gnu_alignof_expr,
+				"_Alignof applied to expression is a GNU extension");
+	}
+
+	return e;
 }
 
 static expr *parse_expr__Generic(symtable *scope, int static_ctx)
@@ -121,13 +148,16 @@ static expr *parse_expr__Generic(symtable *scope, int static_ctx)
 static expr *parse_expr_identifier(void)
 {
 	expr *e;
+	char *sp;
 
 	if(curtok != token_identifier)
 		die_at(NULL, "identifier expected, got %s (%s:%d)",
 				token_to_str(curtok), __FILE__, __LINE__);
 
-	e = expr_new_identifier(token_current_spel());
-	where_cc1_adj_identifier(&e->where, e->bits.ident.spel);
+	sp = token_current_spel();
+
+	e = expr_new_identifier(sp);
+	where_cc1_adj_identifier(&e->where, sp);
 	EAT(token_identifier);
 	return e;
 }
@@ -253,7 +283,10 @@ static expr *parse_expr_primary(symtable *scope, int static_ctx)
 
 				}else if(curtok == token_open_block){
 					/* ({ ... }) */
+					cc1_warn_at(NULL, gnu_expr_stmt, "use of GNU expression-statement");
+
 					e = expr_new_stmt(parse_stmt_block(scope, NULL));
+
 				}else{
 					/* mark as being inside parens, for if((x = 5)) checking */
 					e = parse_expr_exp(scope, static_ctx);
@@ -305,10 +338,11 @@ static expr *parse_expr_postfix(symtable *scope, int static_ctx)
 
 		}else if(accept_where(token_open_paren, &w)){
 			expr *fcall = NULL;
+			const char *sp;
 
 			/* check for specialised builtin parsing */
-			if(expr_kind(e, identifier))
-				fcall = builtin_parse(e->bits.ident.spel, scope);
+			if(expr_kind(e, identifier) && (sp = expr_ident_spel(e)))
+				fcall = builtin_parse(sp, scope);
 
 			if(!fcall){
 				fcall = expr_new_funcall();
@@ -370,8 +404,9 @@ expr *parse_expr_unary(symtable *scope, int static_ctx)
 		switch(curtok){
 			case token_andsc:
 				/* GNU &&label */
+				cc1_warn_at(NULL, gnu_addr_lbl, "use of GNU address-of-label");
 				EAT(curtok);
-				e = expr_new_addr_lbl(token_current_spel());
+				e = expr_new_addr_lbl(token_current_spel(), static_ctx);
 				EAT(token_identifier);
 				break;
 
@@ -396,14 +431,12 @@ expr *parse_expr_unary(symtable *scope, int static_ctx)
 
 			case token_sizeof:
 				set_w = 0; /* no need since there's no sub-parsing here */
-				EAT(token_sizeof);
-				e = parse_expr_sizeof_typeof_alignof(what_sizeof, scope);
+				e = parse_expr_sizeof_typeof_alignof(scope);
 				break;
 
 			case token__Alignof:
 				set_w = 0;
-				EAT(token__Alignof);
-				e = parse_expr_sizeof_typeof_alignof(what_alignof, scope);
+				e = parse_expr_sizeof_typeof_alignof(scope);
 				break;
 
 			case token___extension__:
@@ -550,15 +583,14 @@ expr **parse_funcargs(symtable *scope, int static_ctx)
 {
 	expr **args = NULL;
 
-	while(curtok != token_close_paren){
+	if(curtok == token_close_paren)
+		return NULL;
+
+	do{
 		expr *arg = PARSE_EXPR_NO_COMMA(scope, static_ctx);
 		UCC_ASSERT(arg, "no arg?");
 		dynarray_add(&args, arg);
-
-		if(curtok == token_close_paren)
-			break;
-		EAT(token_comma);
-	}
+	}while(accept(token_comma));
 
 	return args;
 }

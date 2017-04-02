@@ -19,6 +19,7 @@
 #include "defs.h"
 
 #include "type_is.h"
+#include "type_nav.h"
 
 decl *decl_new_w(const where *w)
 {
@@ -109,12 +110,19 @@ const char *decl_store_to_str(const enum decl_storage s)
 	static char buf[16]; /* "inline register" is the longest - just a fit */
 
 	if(s & STORE_MASK_EXTRA){
+		char *trail_space = NULL;
 		*buf = '\0';
 
-		if((s & STORE_MASK_EXTRA) == store_inline)
+		if((s & STORE_MASK_EXTRA) == store_inline){
 			strcpy(buf, "inline ");
+			trail_space = buf + strlen("inline");
+		}
 
 		strcpy(buf + strlen(buf), decl_store_to_str(s & STORE_MASK_STORE));
+
+		if(trail_space && trail_space[1] == '\0')
+			*trail_space = '\0';
+
 		return buf;
 	}
 
@@ -172,6 +180,18 @@ enum type_cmp decl_cmp(decl *a, decl *b, enum type_cmp_opts opts)
 	return cmp;
 }
 
+unsigned decl_hash(const decl *d)
+{
+	unsigned hash = type_hash(d->ref);
+
+	hash ^= d->store;
+
+	if(d->spel)
+		hash ^= dynmap_strhash(d->spel);
+
+	return hash;
+}
+
 int decl_conv_array_func_to_ptr(decl *d)
 {
 	type *old = d->ref;
@@ -200,7 +220,12 @@ int decl_store_static_or_extern(enum decl_storage s)
 enum linkage decl_linkage(decl *d)
 {
 	/* global scoped or extern */
-	switch((enum decl_storage)(d->store & STORE_MASK_STORE)){
+	decl *i;
+
+	/* if first instance is static, we're internal */
+	for(i = d; i->proto; i = i->proto);
+
+	switch((enum decl_storage)(i->store & STORE_MASK_STORE)){
 		case store_extern: return linkage_external;
 		case store_static: return linkage_internal;
 
@@ -228,20 +253,80 @@ int decl_store_duration_is_static(decl *d)
 		|| (d->sym && d->sym->type == sym_global);
 }
 
-const char *decl_to_str_r(char buf[DECL_STATIC_BUFSIZ], decl *d)
+const char *decl_store_spel_type_to_str_r(
+		char buf[DECL_STATIC_BUFSIZ],
+		enum decl_storage store,
+		const char *spel,
+		type *ty)
 {
 	char *bufp = buf;
 
-	if(d->store)
-		bufp += snprintf(bufp, DECL_STATIC_BUFSIZ, "%s ", decl_store_to_str(d->store));
+	if(store)
+		bufp += snprintf(bufp, DECL_STATIC_BUFSIZ, "%s ", decl_store_to_str(store));
 
-	type_to_str_r_spel(bufp, d->ref, d->spel);
+	type_to_str_r_spel(bufp, ty, spel);
 
 	return buf;
+}
+
+const char *decl_to_str_r(char buf[DECL_STATIC_BUFSIZ], decl *d)
+{
+	return decl_store_spel_type_to_str_r(buf, d->store, d->spel, d->ref);
 }
 
 const char *decl_to_str(decl *d)
 {
 	static char buf[DECL_STATIC_BUFSIZ];
 	return decl_to_str_r(buf, d);
+}
+
+decl *decl_impl(decl *const d)
+{
+	decl *i;
+
+	for(i = d; i; i = i->proto)
+		if(i->bits.func.code)
+			return i;
+
+	for(i = d; i; i = i->impl)
+		if(i->bits.func.code)
+			return i;
+
+	return d;
+}
+
+int decl_is_pure_inline(decl *const d)
+{
+	/*
+	 * inline semantics
+	 *
+	 * "" = inline only
+	 * "static" = code emitted, decl is static
+	 * "extern" mentioned, or "inline" not mentioned = code emitted, decl is extern
+	 *
+	 * look for non-inline store on any prototypes
+	 */
+	decl *i;
+
+#define CHECK_INLINE(i)                                      \
+		if(!(i->store & store_inline))                           \
+			return 0; /* not marked as inline - not pure inline */ \
+                                                             \
+		if((i->store & STORE_MASK_STORE) != store_default)       \
+			return 0; /* static or extern */
+
+	for(i = d; i; i = i->proto){
+		CHECK_INLINE(i);
+	}
+
+	for(i = d; i; i = i->impl){
+		CHECK_INLINE(i);
+	}
+
+	return 1;
+}
+
+int decl_should_emit_code(decl *d)
+{
+	return d->bits.func.code && !decl_is_pure_inline(d);
 }

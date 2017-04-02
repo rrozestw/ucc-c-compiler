@@ -27,6 +27,7 @@
 #include "../type_nav.h"
 
 #include "../parse_expr.h"
+#include "__builtin_va.h"
 
 static void va_type_check(
 		expr *va_l, expr *in, symtable *stab, int expect_decay)
@@ -84,15 +85,16 @@ static void fold_va_start(expr *e, symtable *stab)
 	/* second arg check */
 	{
 		sym *second = NULL;
-		decl **args = symtab_func_root(stab)->decls;
+		decl **args = symtab_decls(symtab_func_root(stab));
 		sym *arg = args[dynarray_count(args) - 1]->sym;
-		expr *last_exp = expr_skip_casts(e->funcargs[1]);
+		expr *last_exp = expr_skip_lval2rval(e->funcargs[1]);
 
 		if(expr_kind(last_exp, identifier))
-			second = last_exp->bits.ident.sym;
+			second = last_exp->bits.ident.bits.ident.sym;
 
 		if(second != arg)
-			warn_at(&last_exp->where,
+			cc1_warn_at(&last_exp->where,
+					builtin_va_start,
 					"second parameter to va_start "
 					"isn't last named argument");
 	}
@@ -109,7 +111,8 @@ static void fold_va_start(expr *e, symtable *stab)
 #define ADD_ASSIGN(memb, exp)                     \
 		assign = W(expr_new_assign(                   \
 		        W(expr_new_struct(                    \
-		          va_l, 0 /* ->  since it's [1] */,   \
+		          expr_new_deref(va_l),               \
+		             1 /* ->  since it's *(exp) */,   \
 		            W(expr_new_identifier(memb)))),   \
 		        exp));                                \
                                                   \
@@ -136,13 +139,7 @@ static void fold_va_start(expr *e, symtable *stab)
 		ADD_ASSIGN_VAL("fp_offset", (6 + nargs.fp) * ws);
 		/* FIXME: x86_64::N_CALL_REGS_I reference above */
 
-		/* adjust to take the skip into account */
-		ADD_ASSIGN("reg_save_area",
-				W(expr_new_op2(op_minus,
-					W(builtin_new_reg_save_area()),
-					/* void arith - need _pws
-					 * total arg count * ws */
-					W(expr_new_val((nargs.gp + nargs.fp) * ws)))));
+		ADD_ASSIGN("reg_save_area", W(builtin_new_reg_save_area()));
 
 		ADD_ASSIGN("overflow_arg_area",
 				W(expr_new_op2(op_plus,
@@ -162,7 +159,7 @@ static void fold_va_start(expr *e, symtable *stab)
 	e->tree_type = type_nav_btype(cc1_type_nav, type_void);
 }
 
-static const out_val *builtin_gen_va_start(expr *e, out_ctx *octx)
+static const out_val *builtin_gen_va_start(const expr *e, out_ctx *octx)
 {
 #ifdef UCC_VA_ABI
 	/*
@@ -194,12 +191,12 @@ expr *parse_va_start(const char *ident, symtable *scope)
 	 */
 	expr *fcall = parse_any_args(scope);
 	(void)ident;
-	expr_mutate_builtin_gen(fcall, va_start);
+	expr_mutate_builtin(fcall, va_start);
 	return fcall;
 }
 
 static const out_val *va_arg_gen_read(
-		expr *const e,
+		const expr *const e,
 		out_ctx *const octx,
 		type *const ty,
 		decl *const offset_decl, /* varies - float or integral */
@@ -331,7 +328,7 @@ static const out_val *va_arg_gen_read(
 				type_ptr_to(ty)));
 }
 
-static const out_val *builtin_gen_va_arg(expr *e, out_ctx *octx)
+static const out_val *builtin_gen_va_arg(const expr *e, out_ctx *octx)
 {
 #ifdef UCC_VA_ABI
 	/*
@@ -492,7 +489,8 @@ static void fold_va_arg(expr *e, symtable *stab)
 	if(type_is_promotable(ty, &to)){
 		char tbuf[TYPE_STATIC_BUFSIZ];
 
-		warn_at(&e->where,
+		cc1_warn_at(&e->where,
+				builtin_va_arg,
 				"va_arg(..., %s) has undefined behaviour - promote to %s",
 				type_to_str(ty), type_to_str_r(tbuf, to));
 	}
@@ -522,12 +520,12 @@ expr *parse_va_arg(const char *ident, symtable *scope)
 	fcall->lhs = list;
 	fcall->bits.va_arg_type = ty;
 
-	expr_mutate_builtin_gen(fcall, va_arg);
+	expr_mutate_builtin(fcall, va_arg);
 
 	return fcall;
 }
 
-static const out_val *builtin_gen_va_end(expr *e, out_ctx *octx)
+static const out_val *builtin_gen_va_end(const expr *e, out_ctx *octx)
 {
 	(void)e;
 	return out_new_noop(octx);
@@ -551,11 +549,11 @@ expr *parse_va_end(const char *ident, symtable *scope)
 	expr *fcall = parse_any_args(scope);
 
 	(void)ident;
-	expr_mutate_builtin_gen(fcall, va_end);
+	expr_mutate_builtin(fcall, va_end);
 	return fcall;
 }
 
-static const out_val *builtin_gen_va_copy(expr *e, out_ctx *octx)
+static const out_val *builtin_gen_va_copy(const expr *e, out_ctx *octx)
 {
 	return gen_expr(e->lhs, octx);
 }
@@ -587,6 +585,6 @@ expr *parse_va_copy(const char *ident, symtable *scope)
 {
 	expr *fcall = parse_any_args(scope);
 	(void)ident;
-	expr_mutate_builtin_gen(fcall, va_copy);
+	expr_mutate_builtin(fcall, va_copy);
 	return fcall;
 }

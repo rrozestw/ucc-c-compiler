@@ -118,7 +118,7 @@ attribute *expr_attr_present(expr *e, enum attribute_type t)
 	}
 
 	if(expr_kind(e, identifier)){
-		sym *s = e->bits.ident.sym;
+		sym *s = e->bits.ident.bits.ident.sym;
 		if(s){
 			da = attribute_present(s->decl, t);
 			if(da)
@@ -145,6 +145,9 @@ const char *attribute_to_str(attribute *da)
 		CASE_STR_PREFIX(attr, aligned);
 		CASE_STR_PREFIX(attr, weak);
 		CASE_STR_PREFIX(attr, cleanup);
+		CASE_STR_PREFIX(attr, desig_init);
+		CASE_STR_PREFIX(attr, always_inline);
+		CASE_STR_PREFIX(attr, noinline);
 		CASE_STR_PREFIX(attr, ucc_debug);
 
 		case attr_call_conv:
@@ -237,7 +240,10 @@ int attribute_equal(attribute *a, attribute *b)
 				case attr_noderef:
 				case attr_packed:
 				case attr_weak:
+				case attr_desig_init:
 				case attr_ucc_debug:
+				case attr_always_inline:
+				case attr_noinline:
 					/* equal */
 					break;
 			}

@@ -191,15 +191,15 @@ char *token_to_str(enum token t)
 		CASE_STR_PREFIX(token,  __builtin_va_list);
 
 		CASE_STR_PREFIX(token,  identifier);
-		CASE_STR_PREFIX(token,  integer);
 		CASE_STR_PREFIX(token,  character);
 		CASE_STR_PREFIX(token,  string);
 
 		CASE_STR_PREFIX(token,  __extension__);
 		CASE_STR_PREFIX(token,  __auto_type);
+		CASE_STR_PREFIX(token,  __label__);
 
-		case token_floater:
-			return "float";
+		case token_integer: return "integer-literal";
+		case token_floater: return "float-literal";
 
 #define MAP(t, s) case token_##t: return s
 		MAP(attribute,       "__attribute__");
@@ -308,6 +308,7 @@ char *curtok_to_identifier(int *alloc)
 		case token_attribute:
 		case token___extension__:
 		case token___auto_type:
+		case token___label__:
 			/* we can stringify these */
 			*alloc = 0;
 			return token_to_str(curtok);
@@ -470,8 +471,10 @@ void token_get_current_str(
 		char *p = memchr(currentstring, '\0', currentstringlen);
 
 		if(p && p < currentstring + currentstringlen - 1)
-			warn_at(NULL, "nul-character terminates string early (%s)", p + 1);
+			cc1_warn_at(NULL, str_contain_nul,
+					"nul-character terminates string early (%s)", p + 1);
 	}
 
 	currentstring = NULL;
+	currentstringlen = 0;
 }

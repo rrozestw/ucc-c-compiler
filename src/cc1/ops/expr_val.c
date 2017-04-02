@@ -9,7 +9,7 @@
 
 const char *str_expr_val()
 {
-	return "val";
+	return "value";
 }
 
 /*
@@ -125,7 +125,9 @@ void fold_expr_val(expr *e, symtable *stab)
 		/* we get here if we're forcing it to ull,
 		 * not if the user says, so we can warn unconditionally */
 		if(is_signed){
-			warn_at(&e->where, "integer constant is so large it is unsigned");
+			cc1_warn_at(&e->where,
+					constant_large_unsigned,
+					"integer constant is so large it is unsigned");
 			is_signed = 0;
 		}
 		p = type_llong;
@@ -140,6 +142,11 @@ chosen:
 			is_signed ? "" : "un",
 			type_primitive_to_str(p)); */
 
+	if(is_signed)
+		num->suffix &= ~VAL_UNSIGNED;
+	else
+		num->suffix |= VAL_UNSIGNED;
+
 	if(!is_signed)
 		p = TYPE_PRIMITIVE_TO_UNSIGNED(p);
 
@@ -148,15 +155,20 @@ chosen:
 	(void)stab;
 }
 
-const out_val *gen_expr_val(expr *e, out_ctx *octx)
+const out_val *gen_expr_val(const expr *e, out_ctx *octx)
 {
 	return out_new_num(octx, e->tree_type, &e->bits.num);
 }
 
-const out_val *gen_expr_str_val(expr *e, out_ctx *octx)
+void dump_expr_val(const expr *e, dump *ctx)
 {
-	idt_printf("val.i: 0x%lx\n", (unsigned long)e->bits.num.val.i);
-	UNUSED_OCTX();
+	dump_desc_expr_newline(ctx, "integer literal", e, 0);
+
+	dump_printf_indent(
+			ctx,
+			0,
+			" 0x%" NUMERIC_FMT_X "\n",
+			(integral_t)e->bits.num.val.i);
 }
 
 static void const_expr_val(expr *e, consty *k)
@@ -185,7 +197,7 @@ expr *expr_new_numeric(numeric *num)
 	return e;
 }
 
-const out_val *gen_expr_style_val(expr *e, out_ctx *octx)
+const out_val *gen_expr_style_val(const expr *e, out_ctx *octx)
 {
 	if(K_FLOATING(e->bits.num))
 		stylef("%" NUMERIC_FMT_LD, e->bits.num.val.f);

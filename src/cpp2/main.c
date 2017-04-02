@@ -11,8 +11,8 @@
 #include "../util/dynarray.h"
 #include "../util/alloc.h"
 #include "../util/platform.h"
-#include "../util/std.h"
 #include "../util/limits.h"
+#include "../util/macros.h"
 
 #include "main.h"
 #include "macro.h"
@@ -20,6 +20,7 @@
 #include "include.h"
 #include "directive.h"
 #include "deps.h"
+#include "feat.h"
 
 #define FNAME_BUILTIN "<builtin>"
 #define FNAME_CMDLINE "<command-line>"
@@ -27,41 +28,60 @@
 static const struct
 {
 	const char *nam, *val;
+	int is_fn;
+
 } initial_defs[] = {
 	/* standard */
-	{ "__unix__",       "1"  },
-	{ "__STDC__",       "1"  },
+	{ "__unix__",       "1", 0 },
+	{ "__STDC__",       "1", 0 },
 
-	{ "__STDC_NO_ATOMICS__" , "1" }, /* _Atomic */
-	{ "__STDC_NO_THREADS__" , "1" }, /* _Thread_local */
-	{ "__STDC_NO_COMPLEX__", "1" }, /* _Complex */
-	{ "__STDC_NO_VLA__", "1" }, /* vlas */
+#if !UCC_HAS_ATOMICS
+	{ "__STDC_NO_ATOMICS__" , "1", 0 }, /* _Atomic */
+#endif
+#if !UCC_HAS_THREADS
+	{ "__STDC_NO_THREADS__" , "1", 0 }, /* _Thread_local */
+#endif
+#if !UCC_HAS_COMPLEX
+	{ "__STDC_NO_COMPLEX__", "1", 0 }, /* _Complex */
+#endif
+#if !UCC_HAS_VLA
+	{ "__STDC_NO_VLA__", "1", 0 },
+#endif
 
-#define TYPE(ty, c) { "__" #ty "_TYPE__", #c  }
+#define TYPE(ty, c) { "__" #ty "_TYPE__", #c, 0 }
 
 	TYPE(SIZE, unsigned long),
 	TYPE(PTRDIFF, unsigned long),
 	TYPE(WINT, unsigned),
 
-	{ "__ORDER_LITTLE_ENDIAN__", "1234" },
-	{ "__ORDER_BIG_ENDIAN__",    "4321" },
-	{ "__ORDER_PDP_ENDIAN__",    "3412" },
+	{ "__ORDER_LITTLE_ENDIAN__", "1234", 0 },
+	{ "__ORDER_BIG_ENDIAN__",    "4321", 0 },
+	{ "__ORDER_PDP_ENDIAN__",    "3412", 0 },
 
 	/* non-standard */
-	{ "__BLOCKS__",     "1"  },
+	{ "__BLOCKS__",     "1", 0 },
 
 	/* custom */
-	{ "__UCC__",        "1"  },
+	{ "__UCC__",        "1", 0 },
 
 	/* magic */
-	{ "__FILE__",       NULL },
-	{ "__LINE__",       NULL },
-	{ "__COUNTER__",    NULL },
-	{ "__DATE__",       NULL },
-	{ "__TIME__",       NULL },
-	{ "__TIMESTAMP__",  NULL },
+#define SPECIAL(x) { x, NULL, 0 }
+	SPECIAL("__FILE__"),
+	SPECIAL("__LINE__"),
+	SPECIAL("__COUNTER__"),
+	SPECIAL("__DATE__"),
+	SPECIAL("__TIME__"),
+	SPECIAL("__TIMESTAMP__"),
 
-	{ NULL,             NULL }
+#undef SPECIAL
+#define SPECIAL(x) { x, NULL, 1 }
+	SPECIAL("__has_feature"),
+	SPECIAL("__has_extension"),
+	SPECIAL("__has_attribute"),
+	SPECIAL("__has_builtin"),
+#undef SPECIAL
+
+	{ NULL, NULL, 0 }
 };
 
 struct loc loc_tok;
@@ -76,6 +96,9 @@ char **cd_stack = NULL;
 
 int option_line_info = 1;
 int option_trigraphs = 0, option_digraphs = 0;
+static int option_trace = 0;
+
+enum c_std cpp_std = STD_C99;
 
 enum wmode wmode =
 	  WWHITESPACE
@@ -84,7 +107,9 @@ enum wmode wmode =
 	| WPASTE
 	| WFINALESCAPE
 	| WMULTICHAR
-	| WQUOTE;
+	| WQUOTE
+	| WHASHWARNING
+	| WBACKSLASH_SPACE_NEWLINE;
 
 enum comment_strip strip_comments = STRIP_ALL;
 
@@ -93,21 +118,24 @@ static const struct
 	const char *warn, *desc;
 	enum wmode or_mask;
 } warns[] = {
-	{ "all", "turn on all warnings", ~0U },
-	{ "traditional", "warn about # in the first column", WTRADITIONAL },
-	{ "undef", "warn about undefined macros in #if and #undef", WUNDEF_IN_IF | WUNDEF_NDEF },
-	{ "undef-in-if", "warn about undefined macros in #if/elif", WUNDEF_IN_IF },
-	{ "undef-noop", "warn about #undef <undefined macro>", WUNDEF_NDEF },
-	{ "unused-macros", "warn about unused macros", WUNUSED },
-	{ "redef", "warn about redefining macros", WREDEF },
-	{ "whitespace", "warn about no-whitespace after #define func(a)", WWHITESPACE },
-	{ "trailing", "warn about tokens after #else/endif", WTRAILING },
-	{ "empty-arg", "warn on empty argument to single-arg macro", WEMPTY_ARG },
-	{ "paste", "warn when pasting doesn't make a token", WPASTE },
-	{ "uncalled-macro", "warn when a function-macro is mentioned without ()", WUNCALLED_FN },
+
+#define X(arg, desc, flag) { arg, desc, flag },
+#include "warnings.def"
+#undef X
 };
 
-#define ITER_WARNS(j) for(j = 0; j < sizeof(warns)/sizeof(*warns); j++)
+#define ITER_WARNS(j) for(j = 0; j < countof(warns); j++)
+
+void trace(const char *fmt, ...)
+{
+	va_list l;
+	if(!option_trace)
+		return;
+
+	va_start(l, fmt);
+	vfprintf(stderr, fmt, l);
+	va_end(l);
+}
 
 void debug_push_line(char *s)
 {
@@ -185,11 +213,10 @@ int main(int argc, char **argv)
 {
 	char *infname, *outfname;
 	int ret = 0;
-	enum { NONE, MACROS, STATS, DEPS } dump = NONE;
+	enum { NONE, MACROS, MACROS_WHERE, STATS, DEPS } dump = NONE;
 	int i;
 	int platform_win32 = 0;
 	int freestanding = 0;
-	enum c_std std = STD_C99;
 
 	infname = outfname = NULL;
 
@@ -198,8 +225,12 @@ int main(int argc, char **argv)
 
 	macro_add_limits();
 
-	for(i = 0; initial_defs[i].nam; i++)
-		macro_add(initial_defs[i].nam, initial_defs[i].val, 0);
+	for(i = 0; initial_defs[i].nam; i++){
+		if(initial_defs[i].is_fn)
+			macro_add_func(initial_defs[i].nam, initial_defs[i].val, NULL, 0, 1);
+		else
+			macro_add(initial_defs[i].nam, initial_defs[i].val, 0);
+	}
 
 	switch(platform_type()){
 		case PLATFORM_x86_64:
@@ -322,14 +353,22 @@ int main(int argc, char **argv)
 				break;
 
 			case 'd':
-				if(argv[i][3])
+				if(argv[i][2] && argv[i][3])
 					goto defaul;
 				switch(argv[i][2]){
 					case 'M':
 					case 'S':
+					case 'W':
 						/* list #defines */
-						dump = argv[i][2] == 'M' ? MACROS : STATS;
+						dump = (
+								argv[i][2] == 'M' ? MACROS :
+								argv[i][2] == 'S' ? STATS :
+								MACROS_WHERE);
+
 						no_output = 1;
+						break;
+					case '\0':
+						option_trace = 1;
 						break;
 					default:
 						goto usage;
@@ -376,10 +415,31 @@ int main(int argc, char **argv)
 				break;
 			}
 
+			case 'O':
+			{
+				switch(argv[i][2]){
+					case '0':
+						break;
+					case 's':
+						macro_add("__OPTIMIZE_SIZE__",  "1", 0);
+						/* fallthru */
+					default:
+						macro_add("__OPTIMIZE__",  "1", 0);
+				}
+				break;
+			}
+
+			case 'w':
+				if(!argv[i][2]){
+					wmode = 0;
+					break;
+				}
+				/* fall */
+
 
 			default:
 defaul:
-				if(std_from_str(argv[i], &std, NULL) == 0){
+				if(std_from_str(argv[i], &cpp_std, NULL) == 0){
 					/* we have an std */
 				}else if(!strcmp(argv[i], "-trigraphs")){
 					option_trigraphs = 1;
@@ -395,7 +455,7 @@ defaul:
 	current_fname = FNAME_BUILTIN;
 
 	macro_add("__STDC_HOSTED__",  freestanding ? "0" : "1", 0);
-	switch(std){
+	switch(cpp_std){
 		case STD_C89:
 		case STD_C90:
 			/* no */
@@ -450,7 +510,8 @@ defaul:
 		case NONE:
 			break;
 		case MACROS:
-			macros_dump();
+		case MACROS_WHERE:
+			macros_dump(dump == MACROS_WHERE);
 			break;
 		case STATS:
 			macros_stats();
@@ -479,6 +540,8 @@ usage:
 				"  -dM: debug output\n"
 				"  -dS: print macro usage stats\n"
 				"  -MM: generate Makefile dependencies\n"
+				"  -C: don't discard comments, except in macros\n"
+				"  -CC: don't discard comments, even in macros\n"
 				"  -trigraphs: enable trigraphs\n"
 				"  -digraphs: enable digraphs\n"
 				, stderr);
